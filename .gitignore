@@ -218,3 +218,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project-specific (chess-cheat-detector)
+.env
+.venv/
+data/
+logs/
+*.pgn
+*.zst
