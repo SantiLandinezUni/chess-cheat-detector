@@ -1,0 +1,43 @@
+# Cluster run. Same keys as local.yaml; values are placeholders until we know the cluster type.
+# Hadoop may not read .zst natively: decompress once into HDFS first, e.g.
+#   zstd -dc lichess_db_standard_rated_2026-09.pgn.zst | hdfs dfs -put - /data/chess/raw/lichess_2026-09.pgn
+env: cluster
+
+months: ["2026-07", "2026-08", "2026-09"]  # TBD: 3 most recent complete months
+
+input:
+  pgn_pattern: hdfs:///data/chess/raw/lichess_{month}.pgn  # TBD
+  sample_lines: null  # full months
+
+paths:
+  lake_dir: hdfs:///data/chess/lake  # TBD
+  profiles_dir: data/raw/profiles
+  processed_dir: data/processed
+  log_dir: logs
+
+spark:
+  master: yarn  # TBD
+  driver_memory: 4g  # TBD
+  shuffle_partitions: 200  # TBD
+  jars_packages: org.postgresql:postgresql:42.7.4
+
+postgres:
+  host: TBD
+  port: 5432
+  dbname: chess
+  # Credentials come from PGUSER / PGPASSWORD in .env
+  load_moves: false  # moves stay in Parquet on the cluster
+  jdbc_batch_size: 10000
+
+lichess:
+  users_url: https://lichess.org/api/users
+  batch_size: 300
+  retry_wait_s: 60
+  max_tries: 3
+  user_agent: "chess-cheat-detector/0.1 (IE University student project; github.com/SantiLandinezUni/chess-cheat-detector)"
+
+quality:
+  elo_min: 400
+  elo_max: 3500
+  min_move_time_s: -1.0
+  max_share_no_clock: 0.05

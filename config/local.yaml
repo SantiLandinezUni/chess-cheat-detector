@@ -1,0 +1,47 @@
+# Local run on a MacBook (Apple Silicon, 8 GB RAM).
+# Relative paths are resolved from the repo root. Secrets live in .env, never here.
+env: local
+
+months: ["2026-09"]
+
+input:
+  # {month} is replaced with each entry of `months`
+  pgn_pattern: data/raw/lichess_{month}_sample.pgn
+  # The sample is the first N lines of the dump (see SETUP.md step 5): 124,914 games
+  sample_lines: 2500000
+
+paths:
+  lake_dir: data/lake
+  profiles_dir: data/raw/profiles
+  processed_dir: data/processed
+  log_dir: logs
+
+spark:
+  master: local[4]
+  # Only takes effect if the JVM isn't running yet. With spark-submit, also pass
+  # --driver-memory 3g on the command line.
+  driver_memory: 3g
+  shuffle_partitions: 8
+  jars_packages: org.postgresql:postgresql:42.7.4
+
+postgres:
+  host: localhost
+  port: 5432
+  dbname: chess
+  # User and password come from PGUSER / PGPASSWORD in .env.
+  # If PGUSER is empty, your Mac username is used (Homebrew default, no password).
+  load_moves: true
+  jdbc_batch_size: 10000
+
+lichess:
+  users_url: https://lichess.org/api/users
+  batch_size: 300
+  retry_wait_s: 60
+  max_tries: 3
+  user_agent: "chess-cheat-detector/0.1 (IE University student project; github.com/SantiLandinezUni/chess-cheat-detector)"
+
+quality:
+  elo_min: 400
+  elo_max: 3500
+  min_move_time_s: -1.0
+  max_share_no_clock: 0.05

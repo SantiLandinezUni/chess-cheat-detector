@@ -18,7 +18,7 @@ Do **not** build models, Kafka, Stockfish analysis or a dashboard in Part 1. Des
 | Topic | Decision |
 |---|---|
 | Source | Lichess monthly standard rated dumps (`database.lichess.org`). Chess.com was dropped. |
-| Months | Local: `2026-09`, first ~100k games only. Cluster: 3 most recent complete months (configurable list). |
+| Months | Local: `2026-09`, first 2,500,000 lines of the dump = 124,914 games (last one truncated). Cluster: 3 most recent complete months (configurable list). |
 | Time controls | Ingest ALL, store `time_class` column. Analysis starts with blitz + classical via filter. |
 | Formats | PGN = games · JSON = Lichess `/api/users` profile responses · CSV = flattened player label table · SQL-generated = `ref.*` tables + baselines |
 | Storage | Parquet lake (partitioned by `source_month`, `time_class`) + PostgreSQL 16. Raw JSON kept in a JSONB column. No MongoDB. |
@@ -122,7 +122,7 @@ chess-cheat-detector/
 
 - **Splitting PGN in Spark:** read with Hadoop `textinputformat.record.delimiter = "\n\n[Event "` and prepend `[Event ` back to every record except the first. Parse each game inside `mapPartitions` with `chess.pgn.read_game(io.StringIO(text))`.
 - **game_id** = last path segment of the `Site` header (`https://lichess.org/abcd1234` → `abcd1234`).
-- **Clock and eval comments:** after each move, e.g. `{ [%eval 0.17] [%clk 0:03:00] }`. In python-chess: `node.clock()` → seconds; `node.eval()` → PovScore, so use `.white().score()` for centipawns and `.white().mate()` for mate. About 6% of games have evals; most recent games have clocks.
+- **Clock and eval comments:** after each move, e.g. `{ [%eval 0.17] [%clk 0:03:00] }`. In python-chess: `node.clock()` → seconds; `node.eval()` → PovScore, so use `.white().score()` for centipawns and `.white().mate()` for mate. Measured on the local sample (`data/raw/lichess_2026-09_sample.pgn`, 124,914 games): 124,516 have clocks, 13,003 have evals (~10%). The proposal's ~6% eval figure refers to the full Lichess database, not this sample.
 - **time_class from TimeControl `base+inc`:** estimated duration = base + 40 × inc. Thresholds: ultrabullet < 30 s, bullet < 180, blitz < 480, rapid < 1500, classical ≥ 1500. `TimeControl "-"` → correspondence.
 - **move_time_s** for ply p = clock_after(p − 2) − clock_after(p) + increment. For each side's first move, use base_seconds as the previous clock. First moves are noisy; that's acceptable and should be documented.
 - **Termination** values include `Normal`, `Time forfeit`, `Abandoned` and `Rules infraction`. Keep as-is; Rules infraction may be a weak game-level signal later.

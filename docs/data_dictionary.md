@@ -42,7 +42,9 @@ One record per game: a block of header tags, a blank line, then the move text. H
 | `TimeControl` | `180+2`, `-` | `games.time_control`, `base_seconds`, `increment_seconds`, `time_class` |
 | `Termination` | `Normal`, `Time forfeit`, `Rules infraction` | `games.termination` |
 
-Move text annotations (optional, per move): `{ [%eval 0.17] [%clk 0:03:00] }`. `%eval` is in pawns from White's point of view (`#-3` = mate in 3 for Black). It is present in about 6% of games. `%clk` is the mover's clock after the move.
+Move text annotations (optional, per move): `{ [%eval 0.17] [%clk 0:03:00] }`. `%eval` is in pawns from White's point of view (`#-3` = mate in 3 for Black). `%clk` is the mover's clock after the move.
+
+**Measured on the local sample** (`lichess_2026-09_sample.pgn`, first 2,500,000 lines of the September 2026 dump): 124,914 games, the last one truncated (quarantined by the parser); 124,516 with `%clk`; 13,003 with `%eval` (~10%). The proposal's ~6% eval coverage refers to the full Lichess database, not this sample.
 
 ### S2 — Lichess user profiles (JSON) 🔒
 
