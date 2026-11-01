@@ -34,8 +34,10 @@ From the repo root:
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install pyspark==3.5.3 python-chess pyyaml python-dotenv requests psycopg2-binary pyarrow pandas matplotlib jupyter
+pip install -r requirements.txt
 ```
+
+`requirements.txt` pins PySpark 3.5.3 and `pandas<3` (PySpark 3.5 is built for pandas 2), so everyone gets the same versions.
 
 ## 4. Secrets
 
@@ -46,7 +48,7 @@ python -c "import secrets; print(secrets.token_hex(32))"
 
 Paste the printed value as `LICHESS_HASH_KEY` in `.env`. **Everyone in the group must use the same key**, otherwise player IDs won't match across machines. Share it privately (not in GitHub, not in the group chat history if you can avoid it).
 
-## 5. Get the sample data (~100k games, a few hundred MB)
+## 5. Get the sample data (124,914 games, ~280 MB)
 
 ```bash
 mkdir -p data/raw
@@ -54,7 +56,19 @@ curl -s https://database.lichess.org/standard/lichess_db_standard_rated_2026-09.
   | zstd -dc | head -n 2500000 > data/raw/lichess_2026-09_sample.pgn
 ```
 
-If September 2026 isn't on database.lichess.org yet, use `2026-08`. The last game in the file is cut off; the parser quarantines it.
+If September 2026 isn't on database.lichess.org yet, use `2026-08`. The last game in the file is cut off; the parser quarantines it. With `2026-09` the file has 124,914 game records (including the cut-off one).
+
+## Running a pipeline step
+
+Always from the repo root, with the venv active:
+
+```bash
+source .venv/bin/activate
+PYTHONPATH=. spark-submit --driver-memory 3g src/ingestion/parse_games.py --config config/local.yaml
+```
+
+- `PYTHONPATH=.` lets the driver and the Spark workers import the `src` package.
+- `--driver-memory 3g` must be on the command line: once `spark-submit` has started the JVM, the value in `config/local.yaml` can't change it anymore.
 
 ## 6. Start Claude Code
 
