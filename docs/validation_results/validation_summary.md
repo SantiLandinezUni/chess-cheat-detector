@@ -1,0 +1,67 @@
+# Validation results
+
+Run at: 2026-11-01 13:41:18 UTC
+Months: 2026-09
+Hard checks failed: 0
+
+| File | Check | Level | Observed | Max allowed | Status |
+|---|---|---|---|---|---|
+| 01_row_counts.sql | core.games rows (compare with Parquet games) | info | 124913 |  | INFO |
+| 01_row_counts.sql | core.moves rows (compare with Parquet moves) | info | 8302882 |  | INFO |
+| 01_row_counts.sql | restricted.identity rows (compare with Parquet identity) | info | 69392 |  | INFO |
+| 01_row_counts.sql | core.players rows | info | 69392 |  | INFO |
+| 01_row_counts.sql | core.baselines rows | info | 55 |  | INFO |
+| 01_row_counts.sql | core.player_labels rows | info | 0 |  | INFO |
+| 01_row_counts.sql | ref.rating_bands rows | info | 12 |  | INFO |
+| 01_row_counts.sql | ref.time_classes rows | info | 6 |  | INFO |
+| 01_row_counts.sql | core.players vs restricted.identity: row difference | hard | 0 | 0 | PASS |
+| 01_row_counts.sql | core.players vs distinct players in games: row difference | hard | 0 | 0 | PASS |
+| 01_row_counts.sql | ref.rating_bands: difference from the 12 expected rows | hard | 0 | 0 | PASS |
+| 01_row_counts.sql | ref.time_classes: difference from the 6 expected rows | hard | 0 | 0 | PASS |
+| 01_row_counts.sql | core.baselines: rows above 12 bands x 6 time classes | hard | 0 | 0 | PASS |
+| 02_keys.sql | games: duplicate game_id | hard | 0 | 0 | PASS |
+| 02_keys.sql | games: null game_id | hard | 0 | 0 | PASS |
+| 02_keys.sql | moves: duplicate (game_id, ply) | hard | 0 | 0 | PASS |
+| 02_keys.sql | identity: duplicate player_id | hard | 0 | 0 | PASS |
+| 02_keys.sql | identity: duplicate username | hard | 0 | 0 | PASS |
+| 02_keys.sql | moves: game_id missing from games (orphans) | hard | 0 | 0 | PASS |
+| 02_keys.sql | games: white_id = black_id | hard | 0 | 0 | PASS |
+| 02_keys.sql | games: player missing from restricted.identity | hard | 0 | 0 | PASS |
+| 02_keys.sql | moves: player_id does not match the game's player of that colour | hard | 0 | 0 | PASS |
+| 02_keys.sql | moves: colour does not match ply parity (odd ply = white) | hard | 0 | 0 | PASS |
+| 03_n_plies.sql | games: n_plies differs from the number of move rows | hard | 0 | 0 | PASS |
+| 03_n_plies.sql | games: ply numbers not contiguous (max ply <> count of moves) | hard | 0 | 0 | PASS |
+| 03_n_plies.sql | games: n_plies = 0 (no moves) | soft | 303 | 0 | WARN |
+| 03_n_plies.sql | games checked | info | 124913 |  | INFO |
+| 03_n_plies.sql | total plies in games.n_plies | info | 8302882 |  | INFO |
+| 03_n_plies.sql | total rows in core.moves | info | 8302882 |  | INFO |
+| 04_ranges_nulls.sql | games: Elo outside 400-3500 | soft | 0 | 0 | PASS |
+| 04_ranges_nulls.sql | moves: move_time_s below -1 s | soft | 2388 | 0 | WARN |
+| 04_ranges_nulls.sql | games: percent without clocks (has_clock = false), warn above 5 | soft | 0.32 | 5 | PASS |
+| 04_ranges_nulls.sql | games: started_at outside its source_month | hard | 0 | 0 | PASS |
+| 04_ranges_nulls.sql | games: has_bot inconsistent with the titles | hard | 0 | 0 | PASS |
+| 04_ranges_nulls.sql | games: time_class inconsistent with time_control | hard | 0 | 0 | PASS |
+| 04_ranges_nulls.sql | moves: has_clock game but clock_after_s is null | hard | 0 | 0 | PASS |
+| 04_ranges_nulls.sql | moves: eval_cp and eval_mate both set | hard | 0 | 0 | PASS |
+| 04_ranges_nulls.sql | moves: negative move_time_s (any), count | info | 2916 |  | INFO |
+| 04_ranges_nulls.sql | games: percent with has_eval | info | 10.41 |  | INFO |
+| 04_ranges_nulls.sql | games: percent with a BOT player | info | 0.57 |  | INFO |
+| 04_ranges_nulls.sql | games: null rate % of eco | info | 0.24 |  | INFO |
+| 04_ranges_nulls.sql | games: null rate % of white_rating_diff | info | 0.35 |  | INFO |
+| 04_ranges_nulls.sql | moves: null rate % of clock_after_s | info | 0.05 |  | INFO |
+| 04_ranges_nulls.sql | moves: null rate % of move_time_s | info | 0.05 |  | INFO |
+| 04_ranges_nulls.sql | moves: null rate % of eval (cp and mate both null) | info | 89.73 |  | INFO |
+| 05_label_distribution.sql | player_labels: table is empty (labels not loaded yet) | soft | 1 | 0 | WARN |
+| 05_label_distribution.sql | label = positive (players) | info | 0 |  | INFO |
+| 05_label_distribution.sql | label = negative (players) | info | 0 |  | INFO |
+| 05_label_distribution.sql | label = unknown (players) | info | 0 |  | INFO |
+| 05_label_distribution.sql | label = positive (percent of labelled players) | info |  |  | INFO |
+| 05_label_distribution.sql | found = false (players the API did not return) | info | 0 |  | INFO |
+| 05_label_distribution.sql | player_labels: label inconsistent with the rules in data dictionary §6 | hard | 0 | 0 | PASS |
+| 06_label_coverage.sql | players without a label in core.player_labels | soft | 69392 | 0 | WARN |
+| 06_label_coverage.sql | labels for players that are not in core.players | soft | 0 | 0 | PASS |
+| 06_label_coverage.sql | players with a label (percent of core.players) | info | 0 |  | INFO |
+| notebook | parquet vs postgresql: games row difference | hard | 0 | 0 | PASS |
+| notebook | parquet vs postgresql: moves row difference | hard | 0 | 0 | PASS |
+| notebook | parquet vs postgresql: identity row difference | hard | 0 | 0 | PASS |
+| notebook | parquet quarantine rows (games rejected by the parser) | info | 1 |  | INFO |
