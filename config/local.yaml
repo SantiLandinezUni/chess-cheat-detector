@@ -22,6 +22,7 @@ spark:
   # --driver-memory 3g on the command line.
   driver_memory: 3g
   shuffle_partitions: 8
+  # Same as driver_memory: with spark-submit, pass --packages org.postgresql:postgresql:42.7.4
   jars_packages: org.postgresql:postgresql:42.7.4
 
 postgres:

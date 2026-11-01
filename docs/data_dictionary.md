@@ -211,7 +211,7 @@ PK: (`band_id`, `time_class`).
 | `max_elo` | SMALLINT | inclusive; null for the open top band |
 | `band_label` | VARCHAR(12) | e.g. `1400-1599`, `2800+` |
 
-Bands: below 800, then 200-point bands from 800 to 2799, then 2800+.
+Bands: below 800 (band 1: `min_elo` 0, `max_elo` 799, label `<800`), then 200-point bands from 800 to 2799 (bands 2–11), then 2800+ (band 12).
 
 ### `ref.time_classes` (SQL-generated)
 
@@ -224,7 +224,7 @@ Bands: below 800, then 200-point bands from 800 to 2799, then 2800+.
 
 ### `restricted.identity` 🔒
 
-Same columns as L4. PK `player_id`, unique `username`.
+Same columns as L4. PK `player_id`, unique `username`. Types: `player_id` CHAR(16), `username` VARCHAR(30) NN, `first_seen_month` CHAR(7) NN.
 
 ### `restricted.user_profiles_raw` 🔒
 

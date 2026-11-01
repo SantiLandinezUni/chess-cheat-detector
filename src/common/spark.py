@@ -26,7 +26,11 @@ def get_spark(cfg: dict[str, Any], app_name: str) -> SparkSession:
         .config("spark.sql.session.timeZone", "UTC")
         # toPandas() on timestamp columns crashes without Arrow (PySpark 3.5 + pandas 2.x)
         .config("spark.sql.execution.arrow.pyspark.enabled", "true")
+        # The PostgreSQL JDBC driver writes TIMESTAMP values in the JVM time zone: keep it UTC
+        .config("spark.executor.extraJavaOptions", "-Duser.timezone=UTC")
         .getOrCreate()
     )
+    jvm = spark.sparkContext._jvm
+    jvm.java.util.TimeZone.setDefault(jvm.java.util.TimeZone.getTimeZone("UTC"))  # driver JVM is already running
     spark.sparkContext.setLogLevel("WARN")
     return spark
