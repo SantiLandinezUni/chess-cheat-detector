@@ -1,0 +1,7 @@
+time_class,n_games,avg_plies,pct_time_forfeit,pct_tournament,pct_with_bot,pct_with_eval
+ultrabullet,1122,57.9,77.63,40.55,0.00,8.20
+bullet,44479,65.1,54.74,5.74,0.40,5.75
+blitz,57747,68.6,24.59,10.99,0.69,10.34
+rapid,20824,64.1,11.07,11.36,0.58,19.81
+classical,640,65.3,9.84,3.28,2.81,36.72
+correspondence,101,40.8,33.66,0.00,0.00,22.77
