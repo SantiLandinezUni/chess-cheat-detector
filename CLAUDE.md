@@ -99,6 +99,7 @@ chess-cheat-detector/
 - Each step is a module with a `main()` and a `--config` CLI argument.
 - **Idempotent:** rerunning a step for a month overwrites that month's partition (`spark.sql.sources.partitionOverwriteMode=dynamic`) or upserts in PostgreSQL. Never duplicates rows.
 - Column names snake_case, all timestamps UTC.
+- **Parquet timestamps are UTC.** Spark shows them in UTC (`get_spark` sets the session time zone), but plain Python `datetime` objects from `.collect()`/`.first()` are shown in the Mac's local time (Madrid). In pandas (`pd.read_parquet` or `toPandas()`, which uses Arrow via `get_spark`) the columns arrive tz-naive with UTC values: mark them with `df[col] = df[col].dt.tz_localize("UTC")`. Use `.dt.tz_convert("UTC")` only on columns that are already tz-aware; on tz-naive columns it raises a TypeError.
 - SQL lives in `.sql` files, not long strings in Python.
 - Spark for anything on full data; pandas only on small aggregates inside notebooks.
 - Column names, types and constraints must match `docs/data_dictionary.md`. If code needs a change, update the dictionary in the same commit.
