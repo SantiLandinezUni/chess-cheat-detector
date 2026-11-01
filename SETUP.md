@@ -69,6 +69,11 @@ PYTHONPATH=. spark-submit --driver-memory 3g src/ingestion/parse_games.py --conf
 
 - `PYTHONPATH=.` lets the driver and the Spark workers import the `src` package.
 - `--driver-memory 3g` must be on the command line: once `spark-submit` has started the JVM, the value in `config/local.yaml` can't change it anymore.
+- Steps that use Spark JDBC (`src/db/load_postgres.py`) also need the PostgreSQL driver on the command line, for the same reason (the first run downloads it):
+
+```bash
+PYTHONPATH=. spark-submit --driver-memory 3g --packages org.postgresql:postgresql:42.7.4 src/db/load_postgres.py --config config/local.yaml
+```
 
 ## 6. Start Claude Code
 
