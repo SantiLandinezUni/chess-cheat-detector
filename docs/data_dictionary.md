@@ -150,7 +150,7 @@ Grain: one row per half-move. Loaded into PostgreSQL locally only (`postgres.loa
 | `san` | VARCHAR(10) | NN | move in SAN, e.g. `Nf3` |
 | `uci` | VARCHAR(5) | NN | move in UCI, e.g. `g1f3` |
 | `clock_after_s` | REAL | ≥ 0 | mover's clock after the move (`%clk`) |
-| `move_time_s` | REAL | | see §6; may be slightly negative from lag compensation (soft check) |
+| `move_time_s` | REAL | | see §6; can be negative from lag compensation or the opponent adding time (soft check) |
 | `eval_cp` | INTEGER | | centipawns, White's point of view; null if no eval or if mate |
 | `eval_mate` | SMALLINT | | mate in N, positive = White mates; null otherwise |
 
@@ -183,7 +183,7 @@ Grain: one row per player found in the games.
 
 ### 4.5 `core.baselines` (SQL-generated)
 
-Population behavioural norms per rating band × time class, computed over human-vs-human games (`has_bot = false`) with clocks. This is the seed of the unlabelled anomaly layer.
+Population behavioural norms per rating band × time class, computed over human-vs-human games (`has_bot = false`) with clocks, excluding moves with `move_time_s < 0` (see §6). This is the seed of the unlabelled anomaly layer.
 
 | Column | Type | Description |
 |---|---|---|
@@ -253,7 +253,7 @@ Same columns as L4. PK `player_id`, unique `username`.
 | ≥ 1500 | classical |
 | `TimeControl = "-"` | correspondence |
 
-**move_time_s** for ply p (mover c): `clock_after(p − 2) − clock_after(p) + increment_seconds`. For each side's first move, `clock_after(p − 2)` = `base_seconds`. Null when the game has no clocks.
+**move_time_s** for ply p (mover c): `clock_after(p − 2) − clock_after(p) + increment_seconds`. For each side's first move, `clock_after(p − 2)` = `base_seconds`. Null when the game has no clocks. Negative values are real data, not parse errors: lag compensation gives small negatives, and the opponent adding time (+15 s per click, often before a side's first move) raises the clock and gives larger ones (down to −5,237 s in the 2026-09 sample; 2,388 moves, 0.03%, below −1 s). Baselines (`core.baselines`) exclude moves with `move_time_s < 0`.
 
 **label:**
 

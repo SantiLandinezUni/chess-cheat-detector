@@ -1,0 +1,160 @@
+{
+  "step": "dq_checks",
+  "generated_at": "2026-11-01T12:12:53Z",
+  "env": "local",
+  "source_months": [
+    "2026-09"
+  ],
+  "row_counts": {
+    "games": 124913,
+    "moves": 8302882
+  },
+  "summary": {
+    "pass": 10,
+    "fail": 0,
+    "warn": 3,
+    "pending": 1
+  },
+  "checks": [
+    {
+      "id": "games_pk",
+      "description": "game_id unique and not null",
+      "level": "hard",
+      "applies_to": "games",
+      "status": "pass",
+      "violations": 0
+    },
+    {
+      "id": "moves_pk",
+      "description": "(game_id, ply) unique",
+      "level": "hard",
+      "applies_to": "moves",
+      "status": "pass",
+      "violations": 0
+    },
+    {
+      "id": "games_required_not_null",
+      "description": "required (NN) columns not null",
+      "level": "hard",
+      "applies_to": "games",
+      "status": "pass",
+      "violations": 0
+    },
+    {
+      "id": "moves_required_not_null",
+      "description": "required (NN) columns not null",
+      "level": "hard",
+      "applies_to": "moves",
+      "status": "pass",
+      "violations": 0
+    },
+    {
+      "id": "games_result_allowed",
+      "description": "result in ['1-0', '0-1', '1/2-1/2', '*']",
+      "level": "hard",
+      "applies_to": "games",
+      "status": "pass",
+      "violations": 0
+    },
+    {
+      "id": "games_distinct_players",
+      "description": "white_id != black_id",
+      "level": "hard",
+      "applies_to": "games",
+      "status": "pass",
+      "violations": 0
+    },
+    {
+      "id": "moves_fk_games",
+      "description": "every moves.game_id exists in games",
+      "level": "hard",
+      "applies_to": "moves",
+      "status": "pass",
+      "violations": 0
+    },
+    {
+      "id": "n_plies_matches_moves",
+      "description": "n_plies = count of moves rows",
+      "level": "hard",
+      "applies_to": "games, moves",
+      "status": "pass",
+      "violations": 0
+    },
+    {
+      "id": "elo_range",
+      "description": "Elo between 400 and 3500",
+      "level": "soft",
+      "applies_to": "games",
+      "status": "pass",
+      "violations": 0,
+      "threshold": [
+        400,
+        3500
+      ]
+    },
+    {
+      "id": "move_time_negative",
+      "description": "move_time_s < -1.0 s",
+      "level": "soft",
+      "applies_to": "moves",
+      "status": "warn",
+      "violations": 2388,
+      "threshold": -1.0,
+      "examples": [
+        "DCufPew1",
+        "b7RG5WVC",
+        "sT3kURdq",
+        "WGeTPeCa",
+        "x1C4dZyV"
+      ]
+    },
+    {
+      "id": "zero_plies",
+      "description": "n_plies = 0",
+      "level": "soft",
+      "applies_to": "games",
+      "status": "warn",
+      "violations": 303,
+      "examples": [
+        "vIJeMgWP",
+        "1C0vsc1O",
+        "BsxueLZz",
+        "Z7upVvuz",
+        "fgGt5dwM"
+      ]
+    },
+    {
+      "id": "share_no_clock",
+      "description": "share of games with has_clock = false > 5%",
+      "level": "soft",
+      "applies_to": "games",
+      "status": "pass",
+      "violations": 397,
+      "value": 0.0032,
+      "threshold": 0.05
+    },
+    {
+      "id": "bot_games",
+      "description": "games with a BOT-title player (kept, flagged, excluded from human baselines)",
+      "level": "soft",
+      "applies_to": "games",
+      "status": "warn",
+      "violations": 715,
+      "examples": [
+        "l2FGUv4g",
+        "OLO1nXOL",
+        "UrgY5OmO",
+        "5ifIKqV3",
+        "dfx2bvCX"
+      ]
+    },
+    {
+      "id": "players_have_labels",
+      "description": "every player in games has a row in player_labels",
+      "level": "soft",
+      "applies_to": "labels",
+      "status": "pending",
+      "violations": null
+    }
+  ]
+}

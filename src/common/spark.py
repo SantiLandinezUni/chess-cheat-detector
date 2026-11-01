@@ -24,6 +24,8 @@ def get_spark(cfg: dict[str, Any], app_name: str) -> SparkSession:
         .config("spark.jars.packages", s["jars_packages"])
         .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
         .config("spark.sql.session.timeZone", "UTC")
+        # toPandas() on timestamp columns crashes without Arrow (PySpark 3.5 + pandas 2.x)
+        .config("spark.sql.execution.arrow.pyspark.enabled", "true")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
