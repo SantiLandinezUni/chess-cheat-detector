@@ -1,6 +1,6 @@
 # Data Dictionary — Chess Cheat Detector (Part 1)
 
-Version 0.1 (draft) · Last updated 30 Oct 2026
+Version 1.0 · Last updated 2 Nov 2026
 
 This file is the single source of truth for every dataset in the project. Code must match it; when code changes a column, update this file in the same commit.
 
@@ -133,8 +133,8 @@ Grain: one row per rated standard game.
 | `eco` | CHAR(3) | | opening code |
 | `opening` | VARCHAR(160) | | opening name |
 | `n_plies` | SMALLINT | NN, ≥ 0 | number of half-moves |
-| `has_clock` | BOOLEAN | NN | all moves carry `%clk` |
-| `has_eval` | BOOLEAN | NN | moves carry `%eval` |
+| `has_clock` | BOOLEAN | NN | the game has at least one move and every move carries `%clk` (games with 0 moves are false) |
+| `has_eval` | BOOLEAN | NN | at least one move carries `%eval` |
 | `ingested_at` | TIMESTAMP | NN | pipeline run time |
 
 ### 4.2 `core.moves`
@@ -272,6 +272,7 @@ Labels are proxies for ground truth. `tosViolation` marks any terms-of-service v
 | Check | Level | Applies to |
 |---|---|---|
 | `game_id` unique and not null | hard | games |
+| required (NN) columns not null | hard | games, moves |
 | (`game_id`, `ply`) unique | hard | moves |
 | `result` in allowed set | hard | games |
 | `white_id` ≠ `black_id` | hard | games |
@@ -281,4 +282,5 @@ Labels are proxies for ground truth. `tosViolation` marks any terms-of-service v
 | `move_time_s` < −1 s | soft | moves |
 | `n_plies` = 0 | soft | games |
 | share of games with `has_clock = false` > 5% | soft | games |
+| games with a BOT-title player (kept, flagged, excluded from human baselines) | soft | games |
 | every player in `games` has a row in `player_labels` | soft | labels |
