@@ -1,6 +1,6 @@
 # Validation results
 
-Run at: 2026-11-01 13:41:18 UTC
+Run at: 2026-11-03 11:28:55 UTC
 Months: 2026-09
 Hard checks failed: 0
 
@@ -11,7 +11,7 @@ Hard checks failed: 0
 | 01_row_counts.sql | restricted.identity rows (compare with Parquet identity) | info | 69392 |  | INFO |
 | 01_row_counts.sql | core.players rows | info | 69392 |  | INFO |
 | 01_row_counts.sql | core.baselines rows | info | 55 |  | INFO |
-| 01_row_counts.sql | core.player_labels rows | info | 0 |  | INFO |
+| 01_row_counts.sql | core.player_labels rows | info | 69392 |  | INFO |
 | 01_row_counts.sql | ref.rating_bands rows | info | 12 |  | INFO |
 | 01_row_counts.sql | ref.time_classes rows | info | 6 |  | INFO |
 | 01_row_counts.sql | core.players vs restricted.identity: row difference | hard | 0 | 0 | PASS |
@@ -51,16 +51,16 @@ Hard checks failed: 0
 | 04_ranges_nulls.sql | moves: null rate % of clock_after_s | info | 0.05 |  | INFO |
 | 04_ranges_nulls.sql | moves: null rate % of move_time_s | info | 0.05 |  | INFO |
 | 04_ranges_nulls.sql | moves: null rate % of eval (cp and mate both null) | info | 89.73 |  | INFO |
-| 05_label_distribution.sql | player_labels: table is empty (labels not loaded yet) | soft | 1 | 0 | WARN |
-| 05_label_distribution.sql | label = positive (players) | info | 0 |  | INFO |
-| 05_label_distribution.sql | label = negative (players) | info | 0 |  | INFO |
-| 05_label_distribution.sql | label = unknown (players) | info | 0 |  | INFO |
-| 05_label_distribution.sql | label = positive (percent of labelled players) | info |  |  | INFO |
-| 05_label_distribution.sql | found = false (players the API did not return) | info | 0 |  | INFO |
+| 05_label_distribution.sql | player_labels: table is empty (labels not loaded yet) | soft | 0 | 0 | PASS |
+| 05_label_distribution.sql | label = positive (players) | info | 566 |  | INFO |
+| 05_label_distribution.sql | label = negative (players) | info | 68128 |  | INFO |
+| 05_label_distribution.sql | label = unknown (players) | info | 698 |  | INFO |
+| 05_label_distribution.sql | label = positive (percent of labelled players) | info | 0.816 |  | INFO |
+| 05_label_distribution.sql | found = false (players the API did not return) | info | 17 |  | INFO |
 | 05_label_distribution.sql | player_labels: label inconsistent with the rules in data dictionary §6 | hard | 0 | 0 | PASS |
-| 06_label_coverage.sql | players without a label in core.player_labels | soft | 69392 | 0 | WARN |
+| 06_label_coverage.sql | players without a label in core.player_labels | soft | 0 | 0 | PASS |
 | 06_label_coverage.sql | labels for players that are not in core.players | soft | 0 | 0 | PASS |
-| 06_label_coverage.sql | players with a label (percent of core.players) | info | 0 |  | INFO |
+| 06_label_coverage.sql | players with a label (percent of core.players) | info | 100 |  | INFO |
 | notebook | parquet vs postgresql: games row difference | hard | 0 | 0 | PASS |
 | notebook | parquet vs postgresql: moves row difference | hard | 0 | 0 | PASS |
 | notebook | parquet vs postgresql: identity row difference | hard | 0 | 0 | PASS |
