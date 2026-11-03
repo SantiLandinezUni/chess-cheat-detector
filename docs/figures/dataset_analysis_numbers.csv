@@ -50,3 +50,7 @@ section,metric,value
 6,time forfeit classical,9.84%
 6,time forfeit correspondence,33.66%
 7,games with a BOT,715 (0.57%)
+8,label negative,68128 (98.18%)
+8,label positive,566 (0.82%)
+8,label unknown,698 (1.01%)
+8,players not returned by the API,17
