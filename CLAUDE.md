@@ -1,17 +1,19 @@
-# Chess Cheat Detector — Big Data Technologies, Group Assessment 1
+# Chess Cheat Detector — Big Data Technologies group project
 
 ## What this project is
 
-A distributed pipeline to detect engine assistance and rating manipulation in online chess, using Lichess open data. The long-term goal (Part 2) is a **move-by-move cheating risk score for live Lichess games**.
+A distributed pipeline to detect engine assistance and rating manipulation in online chess, using Lichess open data. The goal is a **move-by-move cheating risk score for live Lichess games**.
 
-**This deliverable (Part 1) is ONLY data generation + ingestion.** Due **Tue 3 Nov 2026, 15:00**. It requires:
-- a dataset including at least one CSV, one JSON and one SQL-generated dataset
-- a data dictionary (`docs/data_dictionary.md` — the source of truth for every table and column)
-- an architecture design with justification for every component
-- an ingestion pipeline (extract from files → load into databases) that is reliable
-- validation queries proving the data landed correctly and is queryable
+**Part 1 (done, on `main`; Group Assessment 1, delivered Tue 3 Nov 2026)** was data generation + ingestion: a dataset with at least one CSV, one JSON and one SQL-generated dataset; the data dictionary (`docs/data_dictionary.md` — the source of truth for every table and column); the architecture design; a reliable ingestion pipeline; and validation queries. Everything it built (tables, columns, privacy and reliability rules below) stays in force.
 
-Do **not** build models, Kafka, Stockfish analysis or a dashboard in Part 1. Design for them (they appear dashed in the architecture diagram), don't implement them.
+**Part 2 (current)** builds the detection side, on the university Slurm cluster (see Cluster rules). Scope, from the dashed components in the architecture diagram:
+- **Unlabelled layer:** full Lichess monthly dumps parsed on the cluster → population baselines per rating band × time class. Anomaly is defined relative to the population.
+- **Labelled layer:** players labelled via the Lichess API `tosViolation` flag (Part 1 label rules). Labels are proxies, not ground truth. Classes are heavily imbalanced: evaluate with precision-recall metrics, never accuracy. Cache API lookups so no account is queried twice.
+- **Features:** move-time distributions, clock management under time pressure, within-session consistency, accuracy relative to rating. Engine-derived features only on games that already carry `[%eval]`; timing features on all games.
+- **Models and scoring:** a game-level risk score updated move by move.
+- **Streaming and serving:** Kafka, live and replay producers, streaming scorer, Stockfish workers for games without evals, dashboard (see Architecture).
+
+Part 2 deliverables, deadline and build order are not fixed yet; add them here when known.
 
 ## Decisions already made (don't change without asking)
 
@@ -50,7 +52,7 @@ sql/generate_derived.sql   ──► core.players, core.baselines               
 sql/validation/*.sql       ──► validation report
 ```
 
-**Planned for Part 2 (dashed lines in diagram):** Kafka topic `lichess.moves` (one message per half-move, key = `game_id`); live producer from Lichess game-stream endpoints; replay producer reading `moves/` Parquet with original move timing (load testing); streaming scorer keeping a running game-level risk score; Stockfish workers for games without evals; dashboard.
+**Part 2, now being built (dashed lines in diagram):** Kafka topic `lichess.moves` (one message per half-move, key = `game_id`); live producer from Lichess game-stream endpoints; replay producer reading `moves/` Parquet with original move timing (load testing); streaming scorer keeping a running game-level risk score; Stockfish workers for games without evals; dashboard.
 
 ## Repo layout
 
@@ -63,7 +65,8 @@ chess-cheat-detector/
 ├── requirements.txt
 ├── config/
 │   ├── local.yaml          # paths, spark master local[4], driver memory 3g, months, sample size
-│   └── cluster.yaml        # same keys, cluster values (TBD — cluster type unknown)
+│   └── cluster.yaml        # same keys, cluster values (TBD — still has HDFS/YARN placeholders)
+├── cluster/                # Slurm cluster: env.sh, spark_test.py/.sbatch, README.md (setup steps)
 ├── src/
 │   ├── common/             # config.py, spark.py (session factory), logging_setup.py, ids.py (HMAC)
 │   ├── ingestion/          # parse_games.py, collect_labels.py, build_labels.py
@@ -86,12 +89,29 @@ chess-cheat-detector/
 
 ## Environment constraints
 
-- **Dev machine:** MacBook Apple Silicon, **8 GB RAM**. Spark `local[4]`, `spark.driver.memory=3g`. Keep memory use low: no `collect()` / `toPandas()` on full tables, never cache large DataFrames.
+- **Laptop (local runs):** MacBook Apple Silicon, **8 GB RAM**. Spark `local[4]`, `spark.driver.memory=3g`. Keep memory use low: no `collect()` / `toPandas()` on full tables, never cache large DataFrames.
 - PostgreSQL 16 via Homebrew. **No Docker locally** (not enough RAM).
 - Java 17, Python 3.11, PySpark 3.5.x (the most common version on university clusters).
-- **Target cluster type is unknown.** Everything environment-specific (paths, Spark master, memory, JDBC URL, months) lives in `config/*.yaml`. Code never hardcodes paths or URLs. Every step runs with `spark-submit src/... --config config/local.yaml`.
+- **Cluster:** Slurm (IE Sci-Tech), Spark `local[N]` inside one job, no HDFS/YARN, **no PostgreSQL server**. See Cluster rules. Everything environment-specific (paths, Spark master, memory, JDBC URL, months) lives in `config/*.yaml`. Code never hardcodes paths or URLs. Every step runs with `spark-submit src/... --config config/local.yaml`.
 - PostgreSQL JDBC driver via `spark.jars.packages=org.postgresql:postgresql:42.7.4`.
-- Cluster note: Hadoop may not read `.zst` natively. Plan: decompress once into HDFS (`zstd -dc file.zst | hdfs dfs -put - path.pgn`). Document this; don't solve it now.
+- Cluster note: Hadoop may not read `.zst` natively, and the cluster has no HDFS. The Part 1 plan (decompress once into HDFS) needs replacing with a decision on where decompressed PGN lives; `zstd` is available on the cluster.
+
+## Cluster rules (Slurm, IE Sci-Tech)
+
+Setup steps for a new account are in `cluster/README.md`.
+
+- You are on the LOGIN node `rust`. Never run Spark, parsing or any heavy compute here.
+  Editing files, pip install, git and submitting jobs are fine.
+- Every shell / job must start with: `source cluster/env.sh` from the repo root (Java 17, Python 3.11, venv in `~/chess/venv`, `SPARK_LOCAL_DIRS=~/chess/spark-tmp`).
+- Compute nodes: fortran, haskell, julia (512 cores, 400–750 GB RAM each).
+  Partitions: `cpu` (default, 7 days), `gpu` (3 days), `interactive` (8 h).
+- Quick tests: `srun -p interactive --cpus-per-task=8 --mem=16G --time=00:30:00 python script.py`
+- Real runs: sbatch scripts modelled on `cluster/spark_test.sbatch`.
+- CPU limits are enforced: Spark runs `local[N]` with N = $SLURM_CPUS_PER_TASK;
+  set spark.driver.memory to ~75% of the Slurm --mem.
+- Monitor jobs: `squeue -u $USER`, `sacct -j <id>`, logs in `logs/<name>-<id>.out`.
+- Storage: work inside your home folder (`~/chess` for the venv and scratch, `~/chess-cheat-detector` for the repo). Ask before downloading more than a few GB (storage
+  location still to be confirmed with the admins). Develop on small 2013 Lichess months.
 
 ## Conventions
 
@@ -129,7 +149,7 @@ chess-cheat-detector/
 - **Termination** values include `Normal`, `Time forfeit`, `Abandoned` and `Rules infraction`. Keep as-is; Rules infraction may be a weak game-level signal later.
 - **BOT accounts** (title `BOT`) can play rated games. Keep them, flag them, exclude them from human baselines.
 
-## Build order (do these in order, one at a time; test each on the sample before moving on)
+## Part 1 build order (done; kept for reference)
 
 1. Scaffolding: `requirements.txt`, `.gitignore`, `.env.example`, `config/local.yaml`, `src/common/*`
 2. `sql/schema.sql`, applied to the local `chess` database
@@ -143,7 +163,7 @@ chess-cheat-detector/
 10. `notebooks/01_dataset_analysis.ipynb` (charts for the report: games per time class, Elo distribution, eval/clock availability, move-time distribution by band, label distribution)
 11. draw.io diagrams in `docs/diagrams/`
 
-## Definition of done for Part 1
+## Definition of done for Part 1 (delivered)
 
 - A single `run_local.sh` runs the whole pipeline on the sample from a clean database
 - Every table in `docs/data_dictionary.md` exists with matching columns and constraints
