@@ -30,7 +30,7 @@ log = logging.getLogger(STEP)
 
 def main() -> None:
     args = build_arg_parser("Build data/processed/player_labels.csv from the fetched profiles").parse_args()
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, args.months)
     setup_logging(STEP, cfg["paths"]["log_dir"])
     out_dir = Path(cfg["paths"]["processed_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)

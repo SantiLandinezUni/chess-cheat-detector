@@ -3,9 +3,11 @@
 Run from the repo root with the venv active:
     PYTHONPATH=. spark-submit --driver-memory 3g src/ingestion/parse_games.py --config config/local.yaml
 
-Every month in the config is parsed in one run. games and moves are overwritten per
-(source_month, time_class) partition, quarantine per source_month, and identity is rebuilt
-from all configured months, so rerunning never duplicates rows.
+Every month in the config (or in --months) is parsed in one run. games and moves are overwritten
+per (source_month, time_class) partition, quarantine and restricted/identity_by_month per
+source_month. restricted/identity is then rebuilt from every month in identity_by_month, not only
+this run's months, so months can be parsed in separate jobs and in any order, and rerunning never
+duplicates rows. Don't let two parse jobs rebuild identity at the same time.
 """
 
 import io
@@ -30,7 +32,7 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-from src.common.config import build_arg_parser, load_config, pgn_path
+from src.common.config import build_arg_parser, expand_path, load_config, pgn_path
 from src.common.ids import load_hash_key, make_player_id
 from src.common.logging_setup import log_duration, setup_logging
 from src.common.spark import get_spark
@@ -100,10 +102,11 @@ QUARANTINE_SCHEMA = StructType([
     StructField("quarantined_at", TimestampType(), False),
 ])
 
-IDENTITY_SCHEMA = StructType([
+# Per-month identity rows (L5); restricted/identity (L4) is derived from them
+IDENTITY_BY_MONTH_SCHEMA = StructType([
     StructField("player_id", StringType(), False),
     StructField("username", StringType(), False),
-    StructField("first_seen_month", StringType(), False),
+    StructField("source_month", StringType(), False),
 ])
 
 
@@ -177,7 +180,7 @@ def _scrub(detail: str, text: str) -> str:
 
 
 def _parse_game(text: str, month: str, key: bytes, run_ts: datetime) -> tuple[tuple, list[tuple], list[tuple]]:
-    """Return (games row, moves rows, identity rows) or raise Rejected."""
+    """Return (games row, moves rows, identity_by_month rows) or raise Rejected."""
     if not _is_complete(text):
         raise Rejected("parse", "truncated_record", "record does not end with a result token")
 
@@ -298,8 +301,13 @@ def write_parquet(df: DataFrame, path: str, partition_cols: list[str]) -> None:
 
 
 def main() -> None:
-    args = build_arg_parser("Parse Lichess PGN into the Parquet lake").parse_args()
-    cfg = load_config(args.config)
+    parser = build_arg_parser("Parse Lichess PGN into the Parquet lake")
+    parser.add_argument("--pgn-pattern", help="input path with {month} (and optionally {data_dir}); "
+                                              "replaces input.pgn_pattern, e.g. for the Part 1 sample")
+    args = parser.parse_args()
+    cfg = load_config(args.config, args.months)
+    if args.pgn_pattern:
+        cfg["input"]["pgn_pattern"] = expand_path(cfg, args.pgn_pattern)
     log = setup_logging(STEP, cfg["paths"]["log_dir"])
     lake = cfg["paths"]["lake_dir"]
     key = load_hash_key()
@@ -333,13 +341,22 @@ def main() -> None:
             for code, n in sorted(bad.map(lambda q: q[3]).countByValue().items()):
                 log.info("quarantined %s=%d", code, n)
 
-        with log_duration(log, "write restricted/identity"):
-            identity = (spark.createDataFrame(ok.flatMap(lambda g: g[2]), IDENTITY_SCHEMA)
-                        .groupBy("player_id")
+        with log_duration(log, "write restricted/identity_by_month"):
+            by_month = (spark.createDataFrame(ok.flatMap(lambda g: g[2]), IDENTITY_BY_MONTH_SCHEMA)
+                        .groupBy("source_month", "player_id")
+                        .agg(F.min("username").alias("username"))
+                        .select("player_id", "username", "source_month"))
+            write_parquet(by_month, f"{lake}/restricted/identity_by_month", ["source_month"])
+
+        with log_duration(log, "rebuild restricted/identity from all months"):
+            all_months = spark.read.parquet(f"{lake}/restricted/identity_by_month")
+            identity = (all_months.groupBy("player_id")
                         .agg(F.min("username").alias("username"),
-                             F.min("first_seen_month").alias("first_seen_month")))
+                             F.min("source_month").alias("first_seen_month")))
             write_parquet(identity, f"{lake}/restricted/identity", [])
-            log.info("identity rows=%d", spark.read.parquet(f"{lake}/restricted/identity").count())
+            stored = sorted(r[0] for r in all_months.select("source_month").distinct().collect())
+            log.info("identity rows=%d from months=%s",
+                     spark.read.parquet(f"{lake}/restricted/identity").count(), stored)
 
         parsed.unpersist()
     spark.stop()

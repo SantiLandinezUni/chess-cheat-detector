@@ -24,7 +24,7 @@ log = logging.getLogger(STEP)
 
 def main() -> None:
     args = build_arg_parser("Load player_labels.csv into core.player_labels").parse_args()
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, args.months)
     setup_logging(STEP, cfg["paths"]["log_dir"])
     csv_path = Path(cfg["paths"]["processed_dir"]) / CSV_NAME
     with open(csv_path, encoding="utf-8") as f:

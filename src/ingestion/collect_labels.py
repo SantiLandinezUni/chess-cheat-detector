@@ -163,7 +163,7 @@ def main() -> None:
     if args.no_db and not args.usernames:
         parser.error("--no-db needs --usernames (the default list comes from restricted.identity)")
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, args.months)
     setup_logging(STEP, cfg["paths"]["log_dir"])
     lichess = cfg["lichess"]
     out_dir = Path(cfg["paths"]["profiles_dir"])

@@ -65,8 +65,8 @@ chess-cheat-detector/
 ├── requirements.txt
 ├── config/
 │   ├── local.yaml          # paths, spark master local[4], driver memory 3g, months, sample size
-│   └── cluster.yaml        # same keys, cluster values (TBD — still has HDFS/YARN placeholders)
-├── cluster/                # Slurm cluster: env.sh, spark_test.py/.sbatch, README.md (setup steps)
+│   └── cluster.yaml        # same keys; paths under paths.data_dir, Spark settings "auto" from the Slurm job
+├── cluster/                # Slurm cluster: env.sh, parse.sbatch, spark_test.py/.sbatch, README.md (setup steps)
 ├── src/
 │   ├── common/             # config.py, spark.py (session factory), logging_setup.py, ids.py (HMAC)
 │   ├── ingestion/          # parse_games.py, collect_labels.py, build_labels.py
