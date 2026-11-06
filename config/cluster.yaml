@@ -1,27 +1,35 @@
-# Cluster run. Same keys as local.yaml; values are placeholders until we know the cluster type.
-# Hadoop may not read .zst natively: decompress once into HDFS first, e.g.
-#   zstd -dc lichess_db_standard_rated_2026-09.pgn.zst | hdfs dfs -put - /data/chess/raw/lichess_2026-09.pgn
+# Cluster run on the IE Sci-Tech Slurm cluster (see cluster/README.md). Same keys as local.yaml.
+# Spark runs local[N] inside one Slurm job; there is no HDFS, YARN or PostgreSQL server.
+# Submit with cluster/parse.sbatch; the month list is its argument (--months overrides `months`).
 env: cluster
 
-months: ["2026-07", "2026-08", "2026-09"]  # TBD: 3 most recent complete months
+months: ["2026-08", "2026-09", "2026-10"]  # default list; each job usually passes its own with --months
 
 input:
-  pgn_pattern: hdfs:///data/chess/raw/lichess_{month}.pgn  # TBD
+  # Decompressed monthly dumps (Hadoop can't split .zst): zstd -dc dump.pgn.zst > {data_dir}/raw/lichess_{month}.pgn
+  # The Part 1 sample is data/raw/lichess_{month}_sample.pgn: pass it with --pgn-pattern.
+  pgn_pattern: "{data_dir}/raw/lichess_{month}.pgn"
   sample_lines: null  # full months
 
 paths:
-  lake_dir: hdfs:///data/chess/lake  # TBD
-  profiles_dir: data/raw/profiles
-  processed_dir: data/processed
-  log_dir: logs
+  # Base folder for all data. Relative = from the repo root. Change this one line once the
+  # admins confirm where large data should live (the home folder is a shared network drive).
+  data_dir: data
+  lake_dir: "{data_dir}/lake"
+  profiles_dir: "{data_dir}/raw/profiles"
+  processed_dir: "{data_dir}/processed"
+  log_dir: logs  # step logs stay in the repo, next to the Slurm job output
 
 spark:
-  master: yarn  # TBD
-  driver_memory: 4g  # TBD
-  shuffle_partitions: 200  # TBD
+  # auto = taken from the Slurm job (src/common/spark.py); fails outside a job, e.g. on rust
+  master: auto              # local[N], N = $SLURM_CPUS_PER_TASK
+  driver_memory: auto       # 75% of the job's --mem; with spark-submit the sbatch passes --driver-memory
+  shuffle_partitions: auto  # 3 x N
+  # Only requested by steps that use Spark JDBC (load_postgres.py)
   jars_packages: org.postgresql:postgresql:42.7.4
 
 postgres:
+  # Placeholder: the cluster has no PostgreSQL server. Don't run the load_* steps here yet.
   host: TBD
   port: 5432
   dbname: chess

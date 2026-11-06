@@ -156,7 +156,7 @@ def main() -> None:
     parser = build_arg_parser("Data quality checks on the Parquet lake")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="where to save the JSON results")
     args = parser.parse_args()
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, args.months)
     setup_logging(STEP, cfg["paths"]["log_dir"])
 
     spark = get_spark(cfg, STEP)

@@ -96,13 +96,13 @@ def reconcile(conn: psycopg2.extensions.connection, parquet_counts: dict[str, in
 
 def main() -> None:
     args = build_arg_parser("Load the Parquet lake into PostgreSQL").parse_args()
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, args.months)
     setup_logging(STEP, cfg["paths"]["log_dir"])
     lake, months, load_moves = cfg["paths"]["lake_dir"], cfg["months"], cfg["postgres"]["load_moves"]
     log.info("months=%s lake=%s target=%s load_moves=%s", months, lake, cfg["postgres"]["jdbc_url"], load_moves)
 
     conn = connect(cfg)
-    spark = get_spark(cfg, STEP)
+    spark = get_spark(cfg, STEP, use_postgres=True)
     with log_duration(log, STEP):
         with log_duration(log, "schema and reference tables"):
             run_sql_file(conn, SQL_DIR / "schema.sql")
