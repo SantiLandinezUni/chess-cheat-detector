@@ -10,7 +10,11 @@ from pyspark.sql import SparkSession
 log = logging.getLogger(__name__)
 
 SHUFFLE_PARTITIONS_PER_CORE = 3  # "auto" shuffle partitions = 3 x Slurm CPUs
-DRIVER_MEMORY_SHARE = 0.75       # "auto" driver memory = 75% of the Slurm job memory
+# "auto" driver memory (JVM heap) as a share of the Slurm job memory. Python-heavy steps run their
+# code in N Python workers outside the heap, so they leave half the job memory for them; with 75%
+# the full-month parse lost a Python worker at the memory limit (job 28202, see cluster/README.md).
+DRIVER_MEMORY_SHARE = 0.75         # DataFrame-only steps (checks, load_postgres)
+DRIVER_MEMORY_SHARE_PYTHON = 0.50  # Python-heavy steps (parse_games, parse_chunked)
 
 
 def _slurm_cpus() -> int:
@@ -22,40 +26,44 @@ def _slurm_cpus() -> int:
     return int(cpus)
 
 
-def _slurm_driver_memory() -> str:
-    """75% of the Slurm job memory, in MB (SLURM_MEM_PER_NODE, or SLURM_MEM_PER_CPU x CPUs)."""
+def _slurm_driver_memory(share: float) -> str:
+    """share x the Slurm job memory, in MB (SLURM_MEM_PER_NODE, or SLURM_MEM_PER_CPU x CPUs)."""
     mem_mb = os.getenv("SLURM_MEM_PER_NODE")
     if not mem_mb and os.getenv("SLURM_MEM_PER_CPU"):
         mem_mb = str(int(os.environ["SLURM_MEM_PER_CPU"]) * _slurm_cpus())
     if not mem_mb:
         raise RuntimeError("spark.driver_memory 'auto' needs a Slurm job with --mem or --mem-per-cpu")
-    return f"{int(int(mem_mb) * DRIVER_MEMORY_SHARE)}m"
+    return f"{int(int(mem_mb) * share)}m"
 
 
-def resolve_spark_settings(s: dict[str, Any]) -> dict[str, Any]:
-    """Replace 'auto' values with ones from the Slurm job: local[N], 75% of --mem, 3 x N partitions."""
+def resolve_spark_settings(s: dict[str, Any], python_heavy: bool = False) -> dict[str, Any]:
+    """Replace 'auto' values with ones from the Slurm job: local[N], 75% of --mem (50% if
+    python_heavy), 3 x N partitions."""
     s = dict(s)
     if s["master"] == "auto":
         s["master"] = f"local[{_slurm_cpus()}]"
     if s["driver_memory"] == "auto":
-        s["driver_memory"] = _slurm_driver_memory()
+        s["driver_memory"] = _slurm_driver_memory(DRIVER_MEMORY_SHARE_PYTHON if python_heavy else DRIVER_MEMORY_SHARE)
     if s["shuffle_partitions"] == "auto":
         s["shuffle_partitions"] = SHUFFLE_PARTITIONS_PER_CORE * _slurm_cpus()
     return s
 
 
-def get_spark(cfg: dict[str, Any], app_name: str, use_postgres: bool = False) -> SparkSession:
+def get_spark(cfg: dict[str, Any], app_name: str, use_postgres: bool = False,
+              python_heavy: bool = False) -> SparkSession:
     """Create (or reuse) a SparkSession with the project defaults.
 
     Only steps that talk to PostgreSQL through Spark JDBC pass use_postgres=True; the others
-    start without asking Maven for the JDBC driver. With spark-submit, --packages and
-    --driver-memory on the command line take precedence (the JVM is already running).
+    start without asking Maven for the JDBC driver. Steps that run Python code inside Spark tasks
+    (RDD map/mapPartitions, UDFs) pass python_heavy=True for the smaller "auto" driver memory.
+    With spark-submit, --packages and --driver-memory on the command line take precedence (the
+    JVM is already running).
     Run steps from the repo root with PYTHONPATH=. so that workers can import `src`.
     """
     # Workers use the same Python as the driver (the .venv), not conda's or the system's
     os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
 
-    s = resolve_spark_settings(cfg["spark"])
+    s = resolve_spark_settings(cfg["spark"], python_heavy)
     log.info("spark: master=%s driver_memory=%s shuffle_partitions=%s jdbc=%s",
              s["master"], s["driver_memory"], s["shuffle_partitions"], use_postgres)
     builder = (

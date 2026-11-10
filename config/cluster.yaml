@@ -10,6 +10,10 @@ input:
   # The Part 1 sample is data/raw/lichess_{month}_sample.pgn: pass it with --pgn-pattern.
   pgn_pattern: "{data_dir}/raw/lichess_{month}.pgn"
   sample_lines: null  # full months
+  # Full months are parsed straight from the dump in chunks (cluster/parse_chunked.sbatch, which
+  # cluster/download.sbatch feeds); each chunk is decompressed to node-local /scratch, cut at a game boundary
+  zst_pattern: "{data_dir}/raw/lichess_db_standard_rated_{month}.pgn.zst"
+  chunk_gb: 20
 
 paths:
   # Base folder for all data. Relative = from the repo root. Change this one line once the
@@ -23,7 +27,7 @@ paths:
 spark:
   # auto = taken from the Slurm job (src/common/spark.py); fails outside a job, e.g. on rust
   master: auto              # local[N], N = $SLURM_CPUS_PER_TASK
-  driver_memory: auto       # 75% of the job's --mem; with spark-submit the sbatch passes --driver-memory
+  driver_memory: auto       # 75% of the job's --mem, 50% for Python-heavy steps (parsers); with spark-submit the sbatch passes --driver-memory
   shuffle_partitions: auto  # 3 x N
   # Only requested by steps that use Spark JDBC (load_postgres.py)
   jars_packages: org.postgresql:postgresql:42.7.4
