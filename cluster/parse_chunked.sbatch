@@ -17,7 +17,10 @@
 #SBATCH --partition=cpu
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --mem=128G
+# 256G, not 128G: the JVM heap is 75% of --mem, and the 64 Python workers live in the other 25%.
+# With 128G (96G heap, 32G left) job 28202 slowed down at the memory limit and lost a Python worker
+# while writing the moves of chunk 2.
+#SBATCH --mem=256G
 #SBATCH --time=3-00:00:00
 #SBATCH --signal=B:TERM@300
 #SBATCH --output=logs/%x-%j.out

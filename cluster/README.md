@@ -130,7 +130,7 @@ sbatch cluster/download.sbatch 2026-10                 # ~30 GB into data/raw/, 
 sbatch --dependency=afterok:<download job id> cluster/parse_chunked.sbatch 2026-10
 ```
 
-`parse_chunked.sbatch` (64 CPUs, 128 GB) streams the dump through `zstd -dc`, writes ~20 GB chunks to `/scratch/$USER/$SLURM_JOB_ID`, always cut at a game boundary, and parses them one at a time into the lake in home (each chunk is deleted before the next one is decompressed). Spark's temporary files go to the same scratch folder. At the end it swaps the month into the lake, rebuilds `restricted/identity` once, runs the quality checks and deletes the scratch folder, also if the job fails or is cancelled. If it fails, the lake keeps its previous data for that month; just resubmit.
+`parse_chunked.sbatch` (64 CPUs, 256 GB) streams the dump through `zstd -dc`, writes ~20 GB chunks to `/scratch/$USER/$SLURM_JOB_ID`, always cut at a game boundary, and parses them one at a time into the lake in home (each chunk is deleted before the next one is decompressed). Spark's temporary files go to the same scratch folder. At the end it swaps the month into the lake, rebuilds `restricted/identity` once, runs the quality checks and deletes the scratch folder, also if the job fails or is cancelled. If it fails, the lake keeps its previous data for that month; just resubmit.
 
 Submit from a normal login shell. `cluster/env.sh` needs the `module` command, which a non-login shell such as `ssh rust 'sbatch ...'` doesn't define (use `ssh rust 'bash -lc "sbatch ..."'`).
 
