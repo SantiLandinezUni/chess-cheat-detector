@@ -108,7 +108,10 @@ Setup steps for a new account are in `cluster/README.md`.
 - Quick tests: `srun -p interactive --cpus-per-task=8 --mem=16G --time=00:30:00 python script.py`
 - Real runs: sbatch scripts modelled on `cluster/spark_test.sbatch`.
 - CPU limits are enforced: Spark runs `local[N]` with N = $SLURM_CPUS_PER_TASK;
-  set spark.driver.memory to ~75% of the Slurm --mem.
+  set spark.driver.memory (the JVM heap) to ~50% of the Slurm --mem for Python-heavy steps (Python code
+  inside Spark tasks: RDD map/mapPartitions, UDFs; e.g. parse_games, parse_chunked), because their N Python
+  workers live outside the heap, and ~75% for DataFrame-only steps (e.g. checks, load_postgres).
+  With 75% the full-month parse lost a Python worker at the memory limit (job 28202).
 - Monitor jobs: `squeue -u $USER`, `sacct -j <id>`, logs in `logs/<name>-<id>.out`.
 - Storage: work inside your home folder (`~/chess` for the venv and scratch, `~/chess-cheat-detector` for the repo). Ask before downloading more than a few GB (storage
   location still to be confirmed with the admins). Develop on small 2013 Lichess months.

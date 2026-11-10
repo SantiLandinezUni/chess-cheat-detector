@@ -83,7 +83,12 @@ Paste the group key as `LICHESS_HASH_KEY`. **It must be the same key we use on o
 
 ## 5. Running jobs
 
-Slurm enforces CPU and memory limits, so Spark always runs as `local[N]` inside one job, with N = `$SLURM_CPUS_PER_TASK`. Set the Spark driver memory to about 75% of the job's `--mem`.
+Slurm enforces CPU and memory limits, so Spark always runs as `local[N]` inside one job, with N = `$SLURM_CPUS_PER_TASK`. The Spark driver memory (the JVM heap) depends on the step:
+
+- **about 50% of `--mem` for Python-heavy steps**, which run Python code inside Spark tasks (RDD `map`/`mapPartitions`, UDFs), like `parse_games.py` and `parse_chunked.py`. Their N Python workers live outside the heap and need the other half.
+- **about 75% for DataFrame-only steps**, like `checks.py` and `load_postgres.py`, where almost all the work happens in the JVM.
+
+With 75% for everything, the first full-month parse (job 28202, 128 GB) lost a Python worker at the memory limit.
 
 **Quick test (`srun`, partition `interactive`):** the command runs on a compute node and its output appears in your terminal.
 

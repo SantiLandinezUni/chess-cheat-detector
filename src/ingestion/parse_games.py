@@ -384,7 +384,7 @@ def main() -> None:
     run_ts = datetime.now(timezone.utc)
     log.info("months=%s input=%s lake=%s", cfg["months"], cfg["input"]["pgn_pattern"], lake)
 
-    spark = get_spark(cfg, STEP)
+    spark = get_spark(cfg, STEP, python_heavy=True)
     with log_duration(log, STEP):
         inputs = [(month, pgn_path(cfg, month)) for month in cfg["months"]]
         parse_and_write(spark, inputs, key, run_ts, lake_outputs(lake), log)

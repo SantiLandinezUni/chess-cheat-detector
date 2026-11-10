@@ -27,7 +27,7 @@ paths:
 spark:
   # auto = taken from the Slurm job (src/common/spark.py); fails outside a job, e.g. on rust
   master: auto              # local[N], N = $SLURM_CPUS_PER_TASK
-  driver_memory: auto       # 75% of the job's --mem; with spark-submit the sbatch passes --driver-memory
+  driver_memory: auto       # 75% of the job's --mem, 50% for Python-heavy steps (parsers); with spark-submit the sbatch passes --driver-memory
   shuffle_partitions: auto  # 3 x N
   # Only requested by steps that use Spark JDBC (load_postgres.py)
   jars_packages: org.postgresql:postgresql:42.7.4

@@ -116,7 +116,7 @@ def main() -> None:
     log.info("month=%s input=%s (%.1f GB) chunk_gb=%.2f work_dir=%s lake=%s",
              month, zst, zst.stat().st_size / 1e9, chunk_bytes / 1e9, args.work_dir, lake)
 
-    spark = get_spark(cfg, STEP)
+    spark = get_spark(cfg, STEP, python_heavy=True)
     n_files = spark.sparkContext.defaultParallelism  # = N cores: fewer, larger files per chunk
     totals: Counter[str] = Counter()
     with log_duration(log, STEP):
