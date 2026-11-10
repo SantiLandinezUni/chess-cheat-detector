@@ -117,3 +117,29 @@ The smoke test should finish in a few seconds and end with `OK  cores=16  rows=5
 ## 6. Storage
 
 Work inside your home folder: `~/chess` and `~/chess-cheat-detector`. Lichess monthly dumps are tens of GB compressed and several times that once decompressed. **Ask the group before downloading more than a few GB**, because we haven't yet confirmed with the admins where large data should go. For development, use the small early Lichess months (2013), which are a few MB each.
+
+Each compute node also has a fast local disk at `/scratch` (fortran 7 TB NVMe, julia 3.5 TB NVMe, haskell 3.7 TB SATA). It is **local to that node**: `rust` and the other nodes can't see it. Use it only for temporary files inside a job (`/scratch/$USER/$SLURM_JOB_ID`) and delete them before the job ends.
+
+## 7. Parsing a full month
+
+A full month is about 30 GB compressed and about 210 GB of PGN, so it is never decompressed whole. Two jobs, from the repo root:
+
+```bash
+mkdir -p logs
+sbatch cluster/download.sbatch 2026-10                 # ~30 GB into data/raw/, resumes if resubmitted, checks the SHA-256
+sbatch --dependency=afterok:<download job id> cluster/parse_chunked.sbatch 2026-10
+```
+
+`parse_chunked.sbatch` (64 CPUs, 128 GB) streams the dump through `zstd -dc`, writes ~20 GB chunks to `/scratch/$USER/$SLURM_JOB_ID`, always cut at a game boundary, and parses them one at a time into the lake in home (each chunk is deleted before the next one is decompressed). Spark's temporary files go to the same scratch folder. At the end it swaps the month into the lake, rebuilds `restricted/identity` once, runs the quality checks and deletes the scratch folder, also if the job fails or is cancelled. If it fails, the lake keeps its previous data for that month; just resubmit.
+
+Submit from a normal login shell. `cluster/env.sh` needs the `module` command, which a non-login shell such as `ssh rust 'sbatch ...'` doesn't define (use `ssh rust 'bash -lc "sbatch ..."'`).
+
+To test on the Part 1 sample (about 6 chunks, a few minutes):
+
+```bash
+zstd -q data/raw/lichess_2026-09_sample.pgn -o data/raw/lichess_2026-09_sample.pgn.zst   # inside srun
+ZST=data/raw/lichess_2026-09_sample.pgn.zst CHUNK_GB=0.05 \
+    sbatch --cpus-per-task=16 --mem=32G --time=01:00:00 cluster/parse_chunked.sbatch 2026-09
+```
+
+It must give the Part 1 numbers: 124,913 games, 8,302,882 moves, 1 quarantined record, 69,392 identity rows.

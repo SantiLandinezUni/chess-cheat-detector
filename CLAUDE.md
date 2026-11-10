@@ -94,7 +94,7 @@ chess-cheat-detector/
 - Java 17, Python 3.11, PySpark 3.5.x (the most common version on university clusters).
 - **Cluster:** Slurm (IE Sci-Tech), Spark `local[N]` inside one job, no HDFS/YARN, **no PostgreSQL server**. See Cluster rules. Everything environment-specific (paths, Spark master, memory, JDBC URL, months) lives in `config/*.yaml`. Code never hardcodes paths or URLs. Every step runs with `spark-submit src/... --config config/local.yaml`.
 - PostgreSQL JDBC driver via `spark.jars.packages=org.postgresql:postgresql:42.7.4`.
-- Cluster note: Hadoop may not read `.zst` natively, and the cluster has no HDFS. The Part 1 plan (decompress once into HDFS) needs replacing with a decision on where decompressed PGN lives; `zstd` is available on the cluster.
+- Cluster note: Hadoop can't split `.zst`, and the cluster has no HDFS. Full months are never decompressed whole (~210 GB): `src/ingestion/parse_chunked.py` streams the `.pgn.zst` from home through `zstd -dc` into ~20 GB chunks on node-local `/scratch`, cut at game boundaries, and parses them one at a time (`cluster/parse_chunked.sbatch`).
 
 ## Cluster rules (Slurm, IE Sci-Tech)
 
@@ -112,6 +112,11 @@ Setup steps for a new account are in `cluster/README.md`.
 - Monitor jobs: `squeue -u $USER`, `sacct -j <id>`, logs in `logs/<name>-<id>.out`.
 - Storage: work inside your home folder (`~/chess` for the venv and scratch, `~/chess-cheat-detector` for the repo). Ask before downloading more than a few GB (storage
   location still to be confirmed with the admins). Develop on small 2013 Lichess months.
+- Node-local scratch: every compute node has its own `/scratch` (fortran 7 TB NVMe, julia 3.5 TB NVMe, haskell 3.7 TB SATA),
+  invisible from `rust` and the other nodes. Jobs use `/scratch/$USER/$SLURM_JOB_ID` for temporary files only
+  (PGN chunks, `SPARK_LOCAL_DIRS`) and delete it on exit with a trap. Results always go to home.
+- Submit jobs from a login shell (`bash -l`, or a normal SSH/VS Code terminal): `cluster/env.sh` needs the
+  `module` command, which non-login shells (e.g. `ssh rust 'sbatch ...'`) don't define.
 
 ## Conventions
 

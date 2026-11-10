@@ -10,6 +10,10 @@ input:
   # The Part 1 sample is data/raw/lichess_{month}_sample.pgn: pass it with --pgn-pattern.
   pgn_pattern: "{data_dir}/raw/lichess_{month}.pgn"
   sample_lines: null  # full months
+  # Full months are parsed straight from the dump in chunks (cluster/parse_chunked.sbatch, which
+  # cluster/download.sbatch feeds); each chunk is decompressed to node-local /scratch, cut at a game boundary
+  zst_pattern: "{data_dir}/raw/lichess_db_standard_rated_{month}.pgn.zst"
+  chunk_gb: 20
 
 paths:
   # Base folder for all data. Relative = from the repo root. Change this one line once the

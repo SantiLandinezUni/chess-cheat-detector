@@ -11,6 +11,7 @@ duplicates rows. Don't let two parse jobs rebuild identity at the same time.
 """
 
 import io
+import logging
 import re
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
@@ -277,12 +278,12 @@ def parse_partition(records: Iterable[tuple[int, str]], month: str, key: bytes,
 
 # ---------- Spark ----------
 
-def read_and_parse(spark: SparkSession, cfg: dict[str, Any], key: bytes, run_ts: datetime) -> RDD:
-    """One RDD of tagged parse results for all configured months."""
+def read_and_parse(spark: SparkSession, inputs: list[tuple[str, str]], key: bytes, run_ts: datetime) -> RDD:
+    """One RDD of tagged parse results for all (month, PGN path) inputs."""
     rdds = []
-    for month in cfg["months"]:
+    for month, path in inputs:
         raw = spark.sparkContext.newAPIHadoopFile(
-            pgn_path(cfg, month),
+            path,
             "org.apache.hadoop.mapreduce.lib.input.TextInputFormat",
             "org.apache.hadoop.io.LongWritable",
             "org.apache.hadoop.io.Text",
@@ -292,12 +293,81 @@ def read_and_parse(spark: SparkSession, cfg: dict[str, Any], key: bytes, run_ts:
     return spark.sparkContext.union(rdds)
 
 
-def write_parquet(df: DataFrame, path: str, partition_cols: list[str]) -> None:
-    """Overwrite only the partitions present in df (dynamic partition overwrite)."""
-    writer = df.write.mode("overwrite")
+def write_parquet(df: DataFrame, path: str, partition_cols: list[str], mode: str = "overwrite") -> None:
+    """Overwrite only the partitions present in df (dynamic partition overwrite), or append."""
+    writer = df.write.mode(mode)
     if partition_cols:
         writer = writer.partitionBy(*partition_cols)
     writer.parquet(path)
+
+
+def lake_outputs(lake: str) -> dict[str, str]:
+    """Where parse_and_write puts each output in the lake."""
+    return {"games": f"{lake}/games", "moves": f"{lake}/moves", "quarantine": f"{lake}/quarantine",
+            "identity_by_month": f"{lake}/restricted/identity_by_month"}
+
+
+def parse_and_write(spark: SparkSession, inputs: list[tuple[str, str]], key: bytes, run_ts: datetime,
+                    outputs: dict[str, str], log: logging.Logger, mode: str = "overwrite",
+                    n_files: int | None = None) -> dict[str, int]:
+    """Parse the (month, path) inputs and write games, moves, quarantine and identity_by_month.
+
+    mode "overwrite" replaces the partitions present in the data, "append" adds to them.
+    n_files caps the files per partition and write (coalesce); None keeps one per input split.
+    Returns the row counts.
+    """
+    def frame(rdd: RDD, schema: StructType) -> DataFrame:
+        df = spark.createDataFrame(rdd, schema)
+        return df.coalesce(n_files) if n_files else df
+
+    with log_duration(log, "read and parse"):
+        # DISK_ONLY: parse once, reuse for the four outputs without holding it in RAM
+        parsed = read_and_parse(spark, inputs, key, run_ts).persist(StorageLevel.DISK_ONLY)
+        kinds = parsed.map(lambda r: r[0]).countByValue()
+        log.info("input records=%d parsed games=%d quarantined=%d",
+                 sum(kinds.values()), kinds.get("ok", 0), kinds.get("bad", 0))
+    ok = parsed.filter(lambda r: r[0] == "ok").map(lambda r: r[1])
+    bad = parsed.filter(lambda r: r[0] == "bad").map(lambda r: r[1])
+
+    with log_duration(log, "write games"):
+        write_parquet(frame(ok.map(lambda g: g[0]), GAMES_SCHEMA),
+                      outputs["games"], ["source_month", "time_class"], mode)
+        log.info("games rows=%d", kinds.get("ok", 0))
+
+    with log_duration(log, "write moves"):
+        write_parquet(frame(ok.flatMap(lambda g: g[1]), MOVES_SCHEMA),
+                      outputs["moves"], ["source_month", "time_class"], mode)
+        n_moves = ok.map(lambda g: len(g[1])).sum()
+        log.info("moves rows=%d", n_moves)
+
+    with log_duration(log, "write quarantine"):
+        write_parquet(frame(bad, QUARANTINE_SCHEMA), outputs["quarantine"], ["source_month"], mode)
+        for code, n in sorted(bad.map(lambda q: q[3]).countByValue().items()):
+            log.info("quarantined %s=%d", code, n)
+
+    with log_duration(log, "write restricted/identity_by_month"):
+        by_month = (spark.createDataFrame(ok.flatMap(lambda g: g[2]), IDENTITY_BY_MONTH_SCHEMA)
+                    .groupBy("source_month", "player_id")
+                    .agg(F.min("username").alias("username"))
+                    .select("player_id", "username", "source_month"))
+        write_parquet(by_month, outputs["identity_by_month"], ["source_month"], mode)
+
+    parsed.unpersist()
+    return {"records": sum(kinds.values()), "games": kinds.get("ok", 0), "moves": n_moves,
+            "quarantine": kinds.get("bad", 0)}
+
+
+def rebuild_identity(spark: SparkSession, lake: str, log: logging.Logger) -> None:
+    """restricted/identity from every month in identity_by_month: one row per player."""
+    with log_duration(log, "rebuild restricted/identity from all months"):
+        all_months = spark.read.parquet(f"{lake}/restricted/identity_by_month")
+        identity = (all_months.groupBy("player_id")
+                    .agg(F.min("username").alias("username"),
+                         F.min("source_month").alias("first_seen_month")))
+        write_parquet(identity, f"{lake}/restricted/identity", [])
+        stored = sorted(r[0] for r in all_months.select("source_month").distinct().collect())
+        log.info("identity rows=%d from months=%s",
+                 spark.read.parquet(f"{lake}/restricted/identity").count(), stored)
 
 
 def main() -> None:
@@ -316,49 +386,9 @@ def main() -> None:
 
     spark = get_spark(cfg, STEP)
     with log_duration(log, STEP):
-        with log_duration(log, "read and parse"):
-            # DISK_ONLY: parse once, reuse for the four outputs without holding it in RAM
-            parsed = read_and_parse(spark, cfg, key, run_ts).persist(StorageLevel.DISK_ONLY)
-            kinds = parsed.map(lambda r: r[0]).countByValue()
-            log.info("input records=%d parsed games=%d quarantined=%d",
-                     sum(kinds.values()), kinds.get("ok", 0), kinds.get("bad", 0))
-        ok = parsed.filter(lambda r: r[0] == "ok").map(lambda r: r[1])
-        bad = parsed.filter(lambda r: r[0] == "bad").map(lambda r: r[1])
-
-        with log_duration(log, "write games"):
-            write_parquet(spark.createDataFrame(ok.map(lambda g: g[0]), GAMES_SCHEMA),
-                          f"{lake}/games", ["source_month", "time_class"])
-            log.info("games rows=%d", kinds.get("ok", 0))
-
-        with log_duration(log, "write moves"):
-            write_parquet(spark.createDataFrame(ok.flatMap(lambda g: g[1]), MOVES_SCHEMA),
-                          f"{lake}/moves", ["source_month", "time_class"])
-            log.info("moves rows=%d", ok.map(lambda g: len(g[1])).sum())
-
-        with log_duration(log, "write quarantine"):
-            write_parquet(spark.createDataFrame(bad, QUARANTINE_SCHEMA),
-                          f"{lake}/quarantine", ["source_month"])
-            for code, n in sorted(bad.map(lambda q: q[3]).countByValue().items()):
-                log.info("quarantined %s=%d", code, n)
-
-        with log_duration(log, "write restricted/identity_by_month"):
-            by_month = (spark.createDataFrame(ok.flatMap(lambda g: g[2]), IDENTITY_BY_MONTH_SCHEMA)
-                        .groupBy("source_month", "player_id")
-                        .agg(F.min("username").alias("username"))
-                        .select("player_id", "username", "source_month"))
-            write_parquet(by_month, f"{lake}/restricted/identity_by_month", ["source_month"])
-
-        with log_duration(log, "rebuild restricted/identity from all months"):
-            all_months = spark.read.parquet(f"{lake}/restricted/identity_by_month")
-            identity = (all_months.groupBy("player_id")
-                        .agg(F.min("username").alias("username"),
-                             F.min("source_month").alias("first_seen_month")))
-            write_parquet(identity, f"{lake}/restricted/identity", [])
-            stored = sorted(r[0] for r in all_months.select("source_month").distinct().collect())
-            log.info("identity rows=%d from months=%s",
-                     spark.read.parquet(f"{lake}/restricted/identity").count(), stored)
-
-        parsed.unpersist()
+        inputs = [(month, pgn_path(cfg, month)) for month in cfg["months"]]
+        parse_and_write(spark, inputs, key, run_ts, lake_outputs(lake), log)
+        rebuild_identity(spark, lake, log)
     spark.stop()
 
 
