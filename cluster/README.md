@@ -148,3 +148,37 @@ ZST=data/raw/lichess_2026-09_sample.pgn.zst CHUNK_GB=0.05 \
 ```
 
 It must give the Part 1 numbers: 124,913 games, 8,302,882 moves, 1 quarantined record, 69,392 identity rows.
+
+## 8. Kafka (streaming, Part 2)
+
+There are no permanent services on the cluster, so a single-node Kafka broker (KRaft mode, no ZooKeeper) runs **inside a Slurm job**, next to its producer and consumer, and is deleted at the end. Install it once, on `rust`, outside the repo:
+
+```bash
+source cluster/env.sh                                    # Java 17
+mkdir -p ~/opt/downloads/kafka-4.4.0 && cd ~/opt/downloads/kafka-4.4.0
+curl -fLO https://downloads.apache.org/kafka/4.4.0/kafka_2.13-4.4.0.tgz
+curl -fLO https://downloads.apache.org/kafka/4.4.0/kafka_2.13-4.4.0.tgz.sha512
+cat kafka_2.13-4.4.0.tgz.sha512; sha512sum kafka_2.13-4.4.0.tgz   # the two hashes must match
+cd ~/opt && tar -xzf downloads/kafka-4.4.0/kafka_2.13-4.4.0.tgz && ln -sfn kafka_2.13-4.4.0 kafka
+~/opt/kafka/bin/kafka-topics.sh --version                # 4.4.0
+cd ~/chess-cheat-detector && pip install -r requirements.txt   # confluent-kafka
+```
+
+`cluster/kafka_job.sh` starts the broker on free localhost ports with its data in `/scratch/$USER/$SLURM_JOB_ID/kafka`, creates `lichess.moves` (8 partitions), runs `CONSUMER_CMD` and then `PRODUCER_CMD`, stops the broker and deletes the folder, also on failure. Replay 1,000 games of 2026-10 at 100× speed:
+
+```bash
+CONSUMER_CMD='python src/streaming/count_consumer.py --config config/cluster.yaml --summary-out logs/streaming/consumer-$SLURM_JOB_ID.json' \
+PRODUCER_CMD='spark-submit --driver-memory 6g src/streaming/replay_producer.py --config config/cluster.yaml --month 2026-10 --max-games 1000 --speed 100' \
+sbatch cluster/kafka_job.sbatch        # or: srun -p interactive --cpus-per-task=8 --mem=16G --time=00:30:00 cluster/kafka_job.sh
+```
+
+Use single quotes so that `$SLURM_JOB_ID`, `$KAFKA_BOOTSTRAP` and `$KAFKA_HOME` are expanded inside the job. `--speed 0` sends without pacing (maximum throughput). Pass `--driver-memory` explicitly: the config's `auto` would give Spark 75% of the job memory, leaving too little for the broker and the consumer.
+
+**Consumer scaling.** `cluster/consumer_scaling.sh` replays the same games without pacing, read by 1, 2, 4 and 8 consumers in one consumer group (`src/streaming/consumer_group.py`), each run with a fresh broker, in two modes: `count` (members only count) and `decode` (members also parse every JSON value, as a scorer would). The first run caches the selected moves under `data/processed/replay_cache/`, so Spark reads the lake only once:
+
+```bash
+srun -p interactive --cpus-per-task=16 --mem=32G --time=01:00:00 cluster/consumer_scaling.sh 2026-10 60000
+```
+
+It writes one row per run to `docs/validation_results/consumer_scaling.csv` (only if every run succeeded): group throughput = all messages / (last message received by any member − first one), latency percentiles over every message of every member, and the producer's own send rate (`producer_msg_s`), which caps the group throughput.
+
