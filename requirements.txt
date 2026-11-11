@@ -7,6 +7,8 @@ python-chess>=1.10
 pyyaml>=6.0
 python-dotenv>=1.0
 requests>=2.31
+# Kafka client (librdkafka) for the streaming producers and consumers (Part 2, E1)
+confluent-kafka>=2.10,<3
 psycopg2-binary>=2.9
 matplotlib>=3.8
 jupyter
