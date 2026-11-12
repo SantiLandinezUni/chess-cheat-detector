@@ -182,3 +182,16 @@ srun -p interactive --cpus-per-task=16 --mem=32G --time=01:00:00 cluster/consume
 
 It writes one row per run to `docs/validation_results/consumer_scaling.csv` (only if every run succeeded): group throughput = all messages / (last message received by any member − first one), latency percentiles over every message of every member, and the producer's own send rate (`producer_msg_s`), which caps the group throughput.
 
+## 9. Strong-scaling test of the parser
+
+Parses the same input, the first 20 GB chunk of 2026-10 (8,568,719 games), with 16, 32, 64 and 128 CPUs, 3 GB of memory per CPU. All output goes to a throwaway lake on the node's `/scratch` (deleted at the end); the step refuses to write inside `data/`. From the repo root:
+
+```bash
+for n in 16 32 64 128; do
+    sbatch --cpus-per-task=$n --mem=$((3 * n))G --job-name=parse-scaling-$n cluster/parse_scaling.sbatch 2026-10
+done
+sbatch --dependency=afterany:<the four job ids> cluster/parse_scaling_report.sbatch <the four job ids>
+```
+
+The report job writes `docs/validation_results/parse_scaling.csv`: elapsed time and MaxRSS from `sacct`, extraction and parse time from each run, and speedup and efficiency against the smallest run (on the parse time, and on the elapsed time). The QOS allows 128 CPUs per user across all running jobs, so the 128-CPU run only starts when nothing else of yours is running. Nodes differ: with 64 CPUs, julia parses a chunk about 20% slower than haskell, so note the `node` column when comparing runs.
+
