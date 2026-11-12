@@ -9,6 +9,11 @@
 # Steps (all DataFrame-only, so the JVM heap gets 75% of --mem):
 #     1. src/features/derived.py      -> lake/derived/players, lake/derived/baselines_part1
 #     2. src/features/game_player.py  -> lake/features/game_player (partitioned by month, time class)
+#     3. src/features/player.py       -> lake/features/player (player x time class, with sessions)
+#     4. src/features/baselines.py    -> lake/baselines (level x band x time class x feature)
+#     5. src/features/anomaly.py      -> lake/anomaly/player
+# Steps 1 and 3-5 rebuild their outputs from the months of THIS run only (they are overwritten, not
+# appended), so always pass the full month list.
 # derived.py runs with --approx-percentiles: exact percentiles over billions of moves don't fit in memory.
 # Scratch: Spark's shuffle/spill files go to /scratch/$USER/$SLURM_JOB_ID (node-local disk), deleted on
 # exit by a trap. The lake itself is read from and written to home.
@@ -70,3 +75,18 @@ echo "===== game_player features ====="
 t0=$SECONDS
 run "${SPARK_SUBMIT[@]}" src/features/game_player.py "${ARGS[@]}"
 echo "game_player took $((SECONDS - t0)) s"
+
+echo "===== player features + sessions ====="
+t0=$SECONDS
+run "${SPARK_SUBMIT[@]}" src/features/player.py "${ARGS[@]}"
+echo "player took $((SECONDS - t0)) s"
+
+echo "===== baselines (every feature) ====="
+t0=$SECONDS
+run "${SPARK_SUBMIT[@]}" src/features/baselines.py "${ARGS[@]}"
+echo "baselines took $((SECONDS - t0)) s"
+
+echo "===== anomaly scores ====="
+t0=$SECONDS
+run "${SPARK_SUBMIT[@]}" src/features/anomaly.py "${ARGS[@]}"
+echo "anomaly took $((SECONDS - t0)) s"

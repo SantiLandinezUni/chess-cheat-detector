@@ -29,6 +29,14 @@ LOW_CLOCK_SHARE = 0.10   # low clock: clock_after_s < 10% of base_seconds
 CP_CAP = 1000            # evals are capped at +/- 1000 centipawns before differencing
 log = logging.getLogger(STEP)
 
+# Numeric per-game features: baselined per band x time class (src/features/baselines.py)
+# and averaged per player (src/features/player.py)
+GAME_FEATURES = [
+    "n_moves", "move_time_mean_s", "move_time_sd_s", "move_time_cv",
+    "move_time_p10_s", "move_time_median_s", "move_time_p90_s", "share_moves_under_2s",
+    "share_low_clock", "move_time_mean_low_clock_s", "move_time_cv_low_clock", "acpl",
+]
+
 
 def build_accuracy(moves: DataFrame) -> DataFrame:
     """Average centipawn loss (acpl) per (game_id, player_id), from consecutive [%eval] values."""
@@ -73,6 +81,7 @@ def build_game_player(games: DataFrame, moves: DataFrame) -> DataFrame:
         mv.groupBy(*keys).agg(
             F.count("*").cast("int").alias("n_moves"),
             F.count("mt").cast("int").alias("n_timed_moves"),
+            F.sum("mt").alias("time_used"),
             F.avg("mt").alias("mean"),
             F.stddev_samp("mt").alias("sd"),
             F.percentile_approx("mt", [0.10, 0.50, 0.90], 10000).alias("pct"),
@@ -84,6 +93,7 @@ def build_game_player(games: DataFrame, moves: DataFrame) -> DataFrame:
         )
         .select(
             *keys, "n_moves", "n_timed_moves",
+            F.col("time_used").cast("float").alias("time_used_s"),
             F.col("mean").cast("float").alias("move_time_mean_s"),
             F.col("sd").cast("float").alias("move_time_sd_s"),
             F.when(F.col("mean") > 0, F.col("sd") / F.col("mean")).cast("float").alias("move_time_cv"),
