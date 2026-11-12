@@ -1,0 +1,5 @@
+cpus,job_id,state,node,mem_gb,games,moves,chunk_gb,elapsed_s,extract_s,parse_s,games_per_s,max_rss_gb,speedup,efficiency,speedup_elapsed,efficiency_elapsed
+16,28561,COMPLETED,fortran,48,8568719,566434998,20.0,2190,31.3,2153.3,3979.3,26.4,1.0,1.0,1.0,1.0
+32,28562,COMPLETED,fortran,96,8568719,566434998,20.0,1142,31.4,1104.6,7757.4,52.1,1.95,0.97,1.92,0.96
+64,28563,COMPLETED,haskell,192,8568719,566434998,20.0,672,33.7,617.0,13888.4,89.6,3.49,0.87,3.26,0.81
+128,28564,FAILED,julia,384,,,,14266,,,,28.9,,,,

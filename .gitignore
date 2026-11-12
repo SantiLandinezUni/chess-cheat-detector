@@ -223,6 +223,7 @@ __marimo__/
 .env
 .venv/
 data/
+data_sample/
 logs/
 *.pgn
 *.zst
