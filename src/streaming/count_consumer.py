@@ -41,7 +41,8 @@ def latency_stats(lat_ms: np.ndarray) -> dict[str, float | None]:
     return {f"p{p}_ms": round(float(v), 1) for p, v in zip(PERCENTILES, pct)} | {"max_ms": float(lat_ms.max())}
 
 
-def make_consumer(bootstrap: str, topic: str, group: str | None, ready_file: str | None) -> Consumer:
+def make_consumer(bootstrap: str, topic: str, group: str | None, ready_file: str | None,
+                  client_id: str = STEP) -> Consumer:
     """Without a group: assigned to every partition of the topic, from the first offset.
     With a group: subscribed as one member of it, so the group's members share the partitions.
     The ready file is touched once the consumer has partitions (for a group member: its first
@@ -52,7 +53,7 @@ def make_consumer(bootstrap: str, topic: str, group: str | None, ready_file: str
         "group.id": group or f"{STEP}-{time.time_ns()}",
         "enable.auto.commit": False,
         "auto.offset.reset": "earliest",
-        "client.id": STEP,
+        "client.id": client_id,
     })
     meta = consumer.list_topics(topic, timeout=30)
     if topic not in meta.topics or meta.topics[topic].error is not None:

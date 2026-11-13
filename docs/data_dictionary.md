@@ -1,6 +1,6 @@
 # Data Dictionary — Chess Cheat Detector (Part 1)
 
-Version 1.1 · Last updated 12 Nov 2026 (Part 2 lake tables L6–L11)
+Version 1.2 · Last updated 13 Nov 2026 (Part 2: L12–L13, `lichess.moves` fields `base_seconds` and `is_last`, §9 `lichess.scores`)
 
 This file is the single source of truth for every dataset in the project. Code must match it; when code changes a column, update this file in the same commit.
 
@@ -18,7 +18,9 @@ This file is the single source of truth for every dataset in the project. Code m
 | S4 | Reference and derived tables | SQL-generated | `sql/generate_reference.sql`, `sql/generate_derived.sql` | `ref.*`, `core.players`, `core.baselines` |
 | L1–L5 | Parquet lake | Parquet | Written by `parse_games.py` | `data/lake/{games,moves,quarantine,restricted/identity,restricted/identity_by_month}` |
 | L6–L11 | Derived tables, features, baselines, anomaly scores (Part 2) | Parquet | Written by `src/features/*.py` (`cluster/features.sbatch`) | `data/lake/{derived/players,derived/baselines_part1,features/game_player,features/player,baselines,anomaly/player}` |
+| L12–L13 | Provisional scorer baselines, live game scores (Part 2) | Parquet | `src/streaming/baselines_provisional.py`, `src/streaming/scorer.py` | `data/lake/{baselines_provisional,scores/live_game}` |
 | K1 | Kafka topic `lichess.moves` | JSON messages | `replay_producer.py` (lake replay); live producer later | Kafka broker inside a Slurm job (`cluster/kafka_job.sh`) |
+| K2 | Kafka topic `lichess.scores` | JSON messages | `src/streaming/scorer.py` | same broker |
 
 **PostgreSQL schemas:** `core` (analytical, pseudonymized), `ref` (reference, SQL-generated), `restricted` 🔒 (usernames, raw API responses; access limited to the label pipeline).
 
@@ -228,6 +230,41 @@ Grain: one row per (`player_id`, `time_class`) for players with `n_games ≥ 5` 
 | `anomaly_score` | float | | combined score, 0–5; null when `n_score_features = 0` |
 | `anomaly_pct` | float | | percent rank of `anomaly_score` within band × time class, 0–1, 1 = most anomalous |
 | `computed_at` | timestamp | ✓ | |
+
+### L12 — `baselines_provisional` (Part 2, `src/streaming/baselines_provisional.py`)
+
+Stand-in for L10 until workstream B's table runs on the full data; the streaming scorer reads whichever folder `paths.scorer_baselines_dir` in `config/*.yaml` names, so switching to L10 is a config change only. **Same columns, types and grain as L10.** Not partitioned; overwritten. Population: the months of the run, games with `has_bot = false`, `n_plies > 0` and `time_class ≠ correspondence`. Timing uses moves with `move_time_s ≥ 0`; bands are those of `ref.rating_bands` from the mover's pre-game Elo. Percentiles approximate (`percentile_approx`, accuracy 10,000). Differences from L10:
+
+| `level` | Rows |
+|---|---|
+| `game` | per (game, player) features with the L8 definitions, computed directly from L1 + L2: `n_moves`, `move_time_mean_s`, `move_time_sd_s`, `move_time_cv`, `share_moves_under_2s`, `share_low_clock`, `move_time_mean_low_clock_s`, `move_time_cv_low_clock` (a subset of L8's features; no `acpl`, no per-game percentiles). `n` = player-games with a non-null value. |
+| `move` | one feature, `move_time_s`: the distribution of single move times per band × time class (`p10`, `p50`, `p90`, ...). `n` = timed moves. L10 has no `move` level; the scorer reads only `game`. |
+
+### L13 — `scores/live_game` (Part 2, `src/streaming/scorer.py`)
+
+Final per-game scores of the streaming scorer, for the dashboard. Partitioned by `run_id` (folder `run_id=<id>`; `scorer_group.py` clears it before a run, so rerunning an id replaces it). One file per scorer process (`part-<name>.parquet`, written with pyarrow when it stops). Grain: one row per (`run_id`, `game_id`, `player_id`). Only hashed `player_id`. Scoring rule in §9.
+
+| Column | Type | NN | Description |
+|---|---|---|---|
+| `run_id` | string | ✓ PK part | partition folder: Slurm job id and run tag, e.g. `29100-nopacing-c4` |
+| `game_id` | string | ✓ PK part | |
+| `player_id` | string(16) | ✓ PK part | |
+| `color` | string | ✓ | `w` or `b` |
+| `time_class` | string | ✓ | |
+| `elo` | smallint | | pre-game rating from the message |
+| `band_id` | smallint | | band of `elo` |
+| `n_plies` | smallint | ✓ | last ply the scorer saw |
+| `n_moves`, `n_timed_moves` | int | ✓ | the player's moves; of those, with `move_time ≥ 0` |
+| `move_time_mean_s`, `move_time_cv`, `share_moves_under_2s`, `share_low_clock`, `move_time_cv_low_clock` | float | | as in L8 (running values at the end of the game) |
+| `n_low_clock_moves` | int | ✓ | timed moves with a low clock |
+| `z_move_time_cv`, `z_share_moves_under_2s`, `z_move_time_cv_low_clock` | float | | robust z against the band × time class baseline; null when not scored (§9) |
+| `n_score_features` | tinyint | ✓ | z-scores that entered the score (0–3) |
+| `confidence` | float | ✓ | `n_timed_moves / (n_timed_moves + 20)` |
+| `risk_score` | float | | 0–5, null when `n_score_features = 0` |
+| `end_reason` | string | ✓ | `last_move` (message with `is_last`), `idle` (no move for `--game-timeout`, 600 s), `shutdown` (still open when the scorer stopped) |
+| `rule_version` | string | ✓ | `timing-z-v1` |
+| `baselines` | string | ✓ | folder name of the baselines used (`baselines_provisional` or `baselines`) |
+| `scored_at` | timestamp | ✓ | |
 
 ---
 
@@ -446,6 +483,54 @@ One message per half-move. **Key** = `game_id` (UTF-8), so all moves of a game g
 | `move_time` | number | yes | seconds, `moves.move_time_s` (can be negative, see §6) |
 | `eval` | integer | yes | centipawns, White's point of view, `moves.eval_cp` |
 | `eval_mate` | integer | yes | mate in N, positive = White mates, `moves.eval_mate` |
-| `timestamp` | integer | no | send time, UTC epoch milliseconds |
+| `base_seconds` | integer | yes | starting clock of the game, `games.base_seconds` (for the scorer's low-clock rule); added 13 Nov 2026 |
+| `is_last` | boolean | no | true on the game's last move (`ply = games.n_plies`), so consumers know the game ended; added 13 Nov 2026 |
+| `timestamp` | integer | no | send time, UTC epoch milliseconds; always the last field |
 
 **Replay selection:** the first N games of a month by `started_at` (optionally from a start time), excluding games with `has_bot = true`, games with `n_plies = 0` and, by default, correspondence. Each move is sent `(started_at − window start + cumulative max(move_time_s, 0) of the game up to this ply) / speed` seconds after the replay starts.
+
+---
+
+## 9. Kafka topic `lichess.scores` and the streaming scoring rule (Part 2)
+
+### K2 — `lichess.scores`
+
+Written by `src/streaming/scorer.py`. One message per player each time the player's score is emitted: every `--emit-every` (default 10) moves of that player, and for both players when the game ends. **Key** = `game_id` (UTF-8). **Value** = one UTF-8 JSON object with exactly these fields, in this order (`SCORE_FIELDS` in `scorer.py`). Same partition count as `lichess.moves` (8), replication factor 1. The Kafka record timestamp equals `timestamp`. Only hashed `player_id`. Floats are rounded to 4 decimals.
+
+| Field | JSON type | Nullable | Description |
+|---|---|---|---|
+| `game_id` | string | no | |
+| `player_id` | string | no | hashed player |
+| `color` | string | no | `w` or `b` |
+| `time_class` | string | no | from the moves |
+| `elo` | integer | yes | pre-game rating from the moves |
+| `band_id` | integer | yes | `ref.rating_bands` band of `elo` |
+| `ply` | integer | no | last ply of the game seen when the score was emitted |
+| `n_moves`, `n_timed_moves` | integer | no | the player's moves so far; of those, with `move_time ≥ 0` |
+| `move_time_mean_s` | number | yes | running mean move time |
+| `move_time_cv` | number | yes | running sd / mean (sample sd; null with < 2 timed moves or mean 0) |
+| `share_moves_under_2s` | number | yes | share of timed moves under 2 s |
+| `share_low_clock` | number | yes | share of moves with clock after the move < 10% of `base_seconds` |
+| `n_low_clock_moves` | integer | no | timed moves with a low clock |
+| `move_time_cv_low_clock` | number | yes | cv of move time on low-clock moves |
+| `z_move_time_cv`, `z_share_moves_under_2s`, `z_move_time_cv_low_clock` | number | yes | robust z against the baseline (rule below); null when not scored |
+| `n_score_features` | integer | no | z-scores that entered the score (0–3) |
+| `confidence` | number | no | `n_timed_moves / (n_timed_moves + 20)` |
+| `risk_score` | number | yes | 0–5; null when `n_score_features = 0` |
+| `is_final` | boolean | no | true for the end-of-game score |
+| `end_reason` | string | yes | final scores only: `last_move`, `idle` or `shutdown` (as L13) |
+| `rule_version` | string | no | `timing-z-v1` |
+| `move_timestamp` | integer | no | `timestamp` of the last move message of the game the scorer had seen (the move that triggered the score, for periodic and `last_move` scores) |
+| `timestamp` | integer | no | emit time, UTC epoch ms. Scoring latency = `timestamp − move_timestamp` |
+
+### Scoring rule `timing-z-v1` (provisional; workstream D's model can replace it)
+
+Per player per game, updated with every move:
+
+1. **Running statistics** with the L8 definitions: only moves with `move_time ≥ 0` are timed; a move is very fast under 2 s; low clock = `clock < 0.10 × base_seconds`.
+2. **Band:** `band_id` of the message's `elo`; **baseline cell:** that band × `time_class` in the table at `paths.scorer_baselines_dir`, rows with `level = game` (L12, or L10 once it exists). Cells with fewer than 30 player-games are not used.
+3. **Robust z** for three features, as in L11: `z = (x − p50) / ((p75 − p25) / 1.349)`, or `/ sd` when the IQR is 0. A feature is scored only with at least 10 timed moves (`move_time_cv`, `share_moves_under_2s`) or 5 timed low-clock moves (`move_time_cv_low_clock`).
+4. **Suspicious direction only:** low values are suspicious for all three: very even move timing, still even under time pressure, and few instant moves (engine relay makes even obvious moves take time). Term = `min(5, max(0, −z))`.
+5. **risk_score** = mean of the available terms × `confidence`, with `confidence = n_timed / (n_timed + 20)` (0.33 after 10 timed moves, 0.67 after 40). Running values of an unfinished game are compared with full-game baselines, so scores built on few moves are discounted.
+
+The score is a heuristic ranking for "high risk" games, not a probability and not a label. Engine-derived features (`eval`) are not used yet.

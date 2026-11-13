@@ -18,7 +18,8 @@
 #   KAFKA_WORK_DIR        this run's scratch folder, for temporary files (deleted at the end)
 #   KAFKA_CONSUMER_READY  file the consumer touches once it is assigned; the producer starts after it
 #                         appears (count_consumer.py does this), or after READY_TIMEOUT_S seconds
-# Optional variables: TOPIC (lichess.moves), PARTITIONS (8), KAFKA_HEAP (1G), READY_TIMEOUT_S (60),
+# Optional variables: TOPIC (lichess.moves), EXTRA_TOPICS (space-separated topics also created with
+#   PARTITIONS partitions, e.g. "lichess.scores" for src/streaming/scorer.py), PARTITIONS (8), KAFKA_HEAP (1G), READY_TIMEOUT_S (60),
 #   CONSUMER_WAIT_S (900: how long to wait for the consumer after the producer ends before killing it),
 #   RUN_TAG (added to the broker log name, for several runs in one job).
 # Broker data and logs live in node-local /scratch/$USER/$SLURM_JOB_ID/kafka; the broker log is
@@ -133,6 +134,10 @@ echo "broker ready in $((SECONDS - t0)) s"
 "$KAFKA_HOME/bin/kafka-topics.sh" --bootstrap-server "$KAFKA_BOOTSTRAP" --create --topic "$KAFKA_TOPIC" \
     --partitions "$PARTITIONS" --replication-factor 1
 "$KAFKA_HOME/bin/kafka-topics.sh" --bootstrap-server "$KAFKA_BOOTSTRAP" --describe --topic "$KAFKA_TOPIC" | head -1
+for t in ${EXTRA_TOPICS:-}; do
+    "$KAFKA_HOME/bin/kafka-topics.sh" --bootstrap-server "$KAFKA_BOOTSTRAP" --create --topic "$t" \
+        --partitions "$PARTITIONS" --replication-factor 1
+done
 
 export KAFKA_CONSUMER_READY="$WORK/consumer.ready"
 echo "===== consumer: $CONSUMER_CMD"
@@ -167,6 +172,10 @@ echo "consumer exit_status=$CONSUMER_STATUS"
 
 "$KAFKA_HOME/bin/kafka-get-offsets.sh" --bootstrap-server "$KAFKA_BOOTSTRAP" --topic "$KAFKA_TOPIC" \
     | awk -F: '{n += $3} END {print "messages in topic: " n}'
+for t in ${EXTRA_TOPICS:-}; do
+    "$KAFKA_HOME/bin/kafka-get-offsets.sh" --bootstrap-server "$KAFKA_BOOTSTRAP" --topic "$t" \
+        | awk -F: -v t="$t" '{n += $3} END {print "messages in " t ": " n}'
+done
 du -sh "$WORK/data" | awk '{print "broker data on /scratch: " $1}'
 
 (( PRODUCER_STATUS == 0 && CONSUMER_STATUS == 0 ))

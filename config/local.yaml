@@ -17,6 +17,13 @@ paths:
   lake_dir: data/lake
   profiles_dir: data/raw/profiles
   processed_dir: data/processed
+  # Baselines the streaming scorer (src/streaming/scorer.py) compares live games with: level "game"
+  # rows with the layout of lake/baselines (data dictionary L10). Provisional table from
+  # src/streaming/baselines_provisional.py until workstream B's table runs on the full data; then
+  # switch to data/lake/baselines (config change only).
+  scorer_baselines_dir: data/lake/baselines_provisional
+  # Final per-game scores of the streaming scorer (one Parquet folder per run_id, hashed ids only)
+  live_scores_dir: data/lake/scores/live_game
   log_dir: logs
 
 spark:

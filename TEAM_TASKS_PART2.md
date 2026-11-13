@@ -177,7 +177,8 @@ The brief asks us to: state the insights and value behind the topic, show there 
 - [x] Topic `lichess.moves`: one message per half-move, key = `game_id`. The message schema is in `docs/data_dictionary.md` §8 (includes time_class, elo and eval_mate).
 - [x] **Replay producer** with original timing ÷ `--speed`; skips BOT games, games with 0 moves and correspondence.
 - [x] **Load test:** speed 100 → p99 8 ms; no pacing → ~560k msg/s; broker ceiling ~1.06M rec/s; consumer scaling 1/2/4/8 in `docs/validation_results/consumer_scaling.csv`.
-- [ ] **Scorer:** a consumer that keeps a running risk score per game using B's baselines (and D's model if ready); writes to topic `lichess.scores` and to a small table for the dashboard.
+- [x] **Scorer** (`src/streaming/scorer.py`): running risk score per player per game against provisional baselines (`lake/baselines_provisional`, 2026-10; switch to B's `lake/baselines` with `paths.scorer_baselines_dir`); writes topic `lichess.scores` (data dictionary §9) and `lake/scores/live_game` for the dashboard. Test in `docs/validation_results/scorer_scaling.csv`: 1,000 games at 100× → score latency p99 8 ms; no pacing (4.0M moves) → 166k moves/s with 1 scorer, 327k with 2, 521k with 4 (= the producer's rate, p99 84 ms).
+- [ ] Scorer: load D's model when it is ready (replace rule `timing-z-v1`).
 - [ ] Optional: live producer from Lichess's streaming endpoints.
 
 ### E2. Serving database and dashboard (Mohamed)

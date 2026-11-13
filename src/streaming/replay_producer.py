@@ -35,7 +35,7 @@ from pyspark.sql import functions as F
 from src.common.config import build_arg_parser, load_config
 from src.common.logging_setup import log_duration, setup_logging
 from src.common.spark import get_spark
-from src.streaming.common import default_bootstrap, default_topic
+from src.streaming.common import MOVE_FIELDS, default_bootstrap, default_topic
 
 STEP = "replay_producer"
 DEFAULT_TIME_CLASSES = ["ultrabullet", "bullet", "blitz", "rapid", "classical"]
@@ -52,29 +52,33 @@ def select_games(spark: SparkSession, lake_dir: str, month: str, max_games: int,
              .where(~F.col("has_bot") & (F.col("n_plies") > 0)))
     if start is not None:
         games = games.where(F.col("started_at") >= F.lit(start))
-    return (games.select("game_id", "time_class", "started_at", "white_elo", "black_elo")
+    return (games.select("game_id", "time_class", "started_at", "white_elo", "black_elo",
+                         "base_seconds", "n_plies")
             .orderBy("started_at", "game_id")
             .limit(max_games))
 
 
 def load_moves(spark: SparkSession, lake_dir: str, month: str, games: DataFrame,
                time_classes: list[str]) -> pd.DataFrame:
-    """Moves of the selected games with the game's start time and the mover's rating (small: pandas)."""
+    """Moves of the selected games with the game's start time, the mover's rating, the starting
+    clock and an end-of-game flag (small: pandas)."""
     moves = (spark.read.parquet(f"{lake_dir}/moves")
              .where((F.col("source_month") == month) & F.col("time_class").isin(time_classes)))
     joined = (moves.join(F.broadcast(games), ["game_id", "time_class"])
               .select("game_id", "ply", "player_id", "color", "time_class",
                       F.when(F.col("color") == "w", F.col("white_elo")).otherwise(F.col("black_elo")).alias("elo"),
                       F.col("clock_after_s").alias("clock"), F.col("move_time_s").alias("move_time"),
-                      F.col("eval_cp").alias("eval"), "eval_mate", "started_at"))
+                      F.col("eval_cp").alias("eval"), "eval_mate", "base_seconds",
+                      (F.col("ply") == F.col("n_plies")).alias("is_last"), "started_at"))
     return joined.toPandas()
 
 
 def cache_file(cache_dir: str, month: str, max_games: int, start: datetime | None,
                time_classes: list[str]) -> Path:
-    """Cache file name for one selection (month, number of games, start, time classes)."""
+    """Cache file name for one selection (month, number of games, start, time classes).
+    v2: with base_seconds and is_last (caches written before these fields are not reused)."""
     start_tag = start.strftime("%Y%m%dT%H%M%S") if start else "monthstart"
-    return Path(cache_dir) / f"replay_{month}_{max_games}g_{start_tag}_{'-'.join(sorted(time_classes))}.parquet"
+    return Path(cache_dir) / f"replay_v2_{month}_{max_games}g_{start_tag}_{'-'.join(sorted(time_classes))}.parquet"
 
 
 def build_schedule(pdf: pd.DataFrame, speed: float) -> pd.DataFrame:
@@ -106,8 +110,11 @@ def encode_messages(pdf: pd.DataFrame) -> tuple[list[bytes], list[str]]:
         "move_time": _nullable(pdf["move_time"], float),
         "eval": _nullable(pdf["eval"], int),
         "eval_mate": _nullable(pdf["eval_mate"], int),
+        "base_seconds": _nullable(pdf["base_seconds"], int),
+        "is_last": pdf["is_last"].astype(bool).tolist(),
     }
     names = list(cols)
+    assert (*names, "timestamp") == MOVE_FIELDS, "message fields out of sync with MOVE_FIELDS"
     prefixes = []
     for row in zip(*cols.values()):
         body = json.dumps(dict(zip(names, row)), separators=(",", ":"))
