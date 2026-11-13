@@ -92,12 +92,12 @@ def aggregate(n: int, work: Path) -> dict[str, Any]:
             "members_reported": len(summaries)}
 
 
-def append_row(path: Path, row: dict[str, Any]) -> None:
+def append_row(path: Path, row: dict[str, Any], columns: list[str] = CSV_COLUMNS) -> None:
     """Append one row to the CSV, writing the header if the file is new."""
     path.parent.mkdir(parents=True, exist_ok=True)
     new = not path.exists()
     with open(path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+        writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
         if new:
             writer.writeheader()
         writer.writerow(row)

@@ -7,10 +7,12 @@ localhost ports and exports KAFKA_BOOTSTRAP (and KAFKA_TOPIC) for the commands i
 import os
 
 TOPIC_MOVES = "lichess.moves"
+TOPIC_SCORES = "lichess.scores"
 
 # Value of a lichess.moves message (JSON, UTF-8); key = game_id. See docs/data_dictionary.md §8.
+# `timestamp` must stay last: the replay producer appends it to a pre-encoded prefix at send time.
 MOVE_FIELDS = ("game_id", "ply", "player_id", "color", "time_class", "elo",
-               "clock", "move_time", "eval", "eval_mate", "timestamp")
+               "clock", "move_time", "eval", "eval_mate", "base_seconds", "is_last", "timestamp")
 
 
 def default_bootstrap() -> str | None:

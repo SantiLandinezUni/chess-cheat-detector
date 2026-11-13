@@ -22,6 +22,13 @@ paths:
   lake_dir: "{data_dir}/lake"
   profiles_dir: "{data_dir}/raw/profiles"
   processed_dir: "{data_dir}/processed"
+  # Baselines the streaming scorer (src/streaming/scorer.py) compares live games with: level "game"
+  # rows with the layout of lake/baselines (data dictionary L10). Provisional table from
+  # src/streaming/baselines_provisional.py until workstream B's table runs on the full data; then
+  # switch to "{data_dir}/lake/baselines" (config change only).
+  scorer_baselines_dir: "{data_dir}/lake/baselines_provisional"
+  # Final per-game scores of the streaming scorer (one Parquet folder per run_id, hashed ids only)
+  live_scores_dir: "{data_dir}/lake/scores/live_game"
   log_dir: logs  # step logs stay in the repo, next to the Slurm job output
 
 spark:

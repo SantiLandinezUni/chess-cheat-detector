@@ -1,0 +1,5 @@
+run_at_utc,job_id,node,cpus,partitions,speed,consumers,games,messages,producer_msg_s,duration_s,scorer_msg_s,emit_every,scores_emitted,scores_in_topic,final_scores,games_ended_last_move,games_ended_idle,games_ended_shutdown,score_latency_p50_ms,score_latency_p95_ms,score_latency_p99_ms,score_latency_max_ms,ack_latency_p50_ms,ack_latency_p99_ms,member_msg_min,member_msg_max,baselines
+2026-11-13T11:35:31Z,29064,fortran,16,8,100.0,1,1000,68054,2813.3,24.159,2816.9,10,7802,7802,1996,1000,0,0,6.0,7.0,8.0,12.0,15.0,18.0,68054,68054,baselines_provisional
+2026-11-13T11:39:57Z,29064,fortran,16,8,0.0,1,60000,3986438,602991.9,24.008,166046.2,10,458656,458656,119886,60000,0,0,8769.0,16288.0,17092.0,17485.0,8796.0,17124.0,3986438,3986438,baselines_provisional
+2026-11-13T11:41:12Z,29064,fortran,16,8,0.0,2,60000,3986438,633519.5,12.206,326596.6,10,458656,458656,119886,60000,0,0,3088.0,5584.0,5926.0,6096.0,3114.0,5954.0,1985622,2000816,baselines_provisional
+2026-11-13T11:42:27Z,29064,fortran,16,8,0.0,4,60000,3986438,520333.2,7.655,520762.6,10,458656,458656,119886,60000,0,0,6.0,44.0,84.0,110.0,13.0,122.0,987044,1005656,baselines_provisional
