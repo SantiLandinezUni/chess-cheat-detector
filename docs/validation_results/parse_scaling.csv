@@ -1,5 +1,6 @@
-cpus,job_id,state,node,mem_gb,games,moves,chunk_gb,elapsed_s,extract_s,parse_s,games_per_s,max_rss_gb,speedup,efficiency,speedup_elapsed,efficiency_elapsed
-16,28561,COMPLETED,fortran,48,8568719,566434998,20.0,2190,31.3,2153.3,3979.3,26.4,1.0,1.0,1.0,1.0
-32,28562,COMPLETED,fortran,96,8568719,566434998,20.0,1142,31.4,1104.6,7757.4,52.1,1.95,0.97,1.92,0.96
-64,28563,COMPLETED,haskell,192,8568719,566434998,20.0,672,33.7,617.0,13888.4,89.6,3.49,0.87,3.26,0.81
-128,28564,FAILED,julia,384,,,,14266,,,,28.9,,,,
+cpus,job_id,state,node,mem_gb,mem_per_cpu_gb,games,moves,chunk_gb,elapsed_s,extract_s,parse_s,games_per_s,max_rss_gb,speedup,efficiency,speedup_elapsed,efficiency_elapsed,note
+16,28561,COMPLETED,fortran,48,3.0,8568719,566434998,20.0,2190,31.3,2153.3,3979.3,26.4,1.0,1.0,1.0,1.0,
+32,28562,COMPLETED,fortran,96,3.0,8568719,566434998,20.0,1142,31.4,1104.6,7757.4,52.1,1.95,0.97,1.92,0.96,
+64,28563,COMPLETED,haskell,192,3.0,8568719,566434998,20.0,672,33.7,617.0,13888.4,89.6,3.49,0.87,3.26,0.81,
+128,28564,FAILED,julia,384,3.0,,,,14266,,,,28.9,,,,,"Failed: hit the 4 h time limit on julia. Startup 254 s (other runs 1-13 s), read-and-parse 9,241 s, then the games write did not finish; MaxRSS 29 GiB of 384 GB, no errors before the TERM. Rerun as 28808 on fortran, which also failed."
+128,28808,FAILED,fortran,256,2.0,,,,3454,,,,115.3,,,,,"2 GB per CPU instead of 3: at 3 GB per CPU, 384 GB only fits on a nearly empty node (the haskell rerun 28806 waited on Resources and was cancelled); the 16-64 CPU runs peaked at 1.4-1.65 GiB per CPU. Failed: hit the 1 h time limit on fortran. Startup 2 s; the read-and-parse phase finished in 255 s with ~104 cores busy (16 CPUs: 1,783 s, i.e. 6.99x, efficiency 0.87) and games were written in 11 s; then the moves write stalled with 0 cores busy for 50 min (node load ~2), MaxRSS 115 GiB of 256 GB, no errors before the TERM."
