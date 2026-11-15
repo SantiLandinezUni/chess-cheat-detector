@@ -191,26 +191,47 @@ The brief asks us to: state the insights and value behind the topic, show there 
 
 ---
 
-## Report (~40 pages) and presentation
+## Report (minimum 40 pages: Part 1 + Part 2) and presentation
 
-Mohamed edits and keeps the structure; each person writes the sections for their workstream.
+**Confirmed by the professor:** the final report is the **Part 1 report plus a Part 2 continuation**, at least 40 pages together. Part 1 is about 20 pages, so Part 2 adds **at least 20 new pages**. The plan below targets about 25–29. Going over the minimum is fine.
 
-| Section | Owner |
-|---|---|
-| 1. Context, insights and expected value | Mohamed + Santi |
-| 2. Data at scale: volume, sources, veracity and integrity (DQ results per month) | Santi |
-| 3. Legal and ethical implications: CC0 data, GDPR and pseudonymisation, API terms, combining datasets, risk of false accusations | Fede + Mohamed |
-| 4. Architecture for Part 2: lake + serving layer, cluster, streaming (updated diagram) | Karim + Santi |
-| 5. Scale-up and scalability results | Santi |
-| 6. Unlabelled layer: features, baselines, anomaly scores | Massimo |
-| 7. Labelled layer: labels, sampling, class imbalance | Fede |
-| 8. Model and evaluation | Karim |
-| 9. Real-time scoring and load test | Santi |
-| 10. Dashboard and insights | Mohamed |
-| 11. Conclusions, limitations, further work | everyone (Mohamed edits) |
+Mohamed edits the whole document; each person writes and updates their own chapters in the same Google Doc as Part 1.
 
-**Presentation (10–15 min):** one slide per section group, a live or recorded dashboard demo, and the scaling and evaluation charts.
-**Jury duty:** everyone prepares 1–2 questions or insights for each other group.
+### Part 1 chapters: keep them, update only what changed
+
+The author of each original section makes these updates:
+
+- **Architecture:** the Part 2 components are now built (cluster, Kafka, scorer), so they go from dashed to solid in the diagram.
+- **Local and cluster deployment:** replace the "open points" with the real setup (Slurm, node-local `/scratch`, 64-core jobs, chunked processing).
+- **PostgreSQL:** now the serving layer only; heavy processing moved to Spark + Parquet on the cluster.
+- **Any numbers that changed** (for example the number of players across 3 months).
+
+### New Part 2 chapters
+
+| Chapter | Pages | Owner |
+|---|---|---|
+| Part 2 objectives and expected value (including the reframed generalisation objective) | 2 | Mohamed + Santi |
+| Data at scale: 3 months, veracity and integrity (quality table per month) | 3 | Santi |
+| Scale-up and scalability: chunked processing, the memory failure and its fix, the strong-scaling test, the 128-core limit | 3 | Santi |
+| Unlabelled layer: features, baselines, anomaly scores | 4 | Massimo |
+| Labels at scale: sampling plan, class imbalance | 3 | Fede |
+| Model and evaluation: PR-AUC, timing vs engine features, generalisation test | 4 | Karim |
+| Real-time scoring and load test: Kafka design, replay, scorer, latency and throughput | 3 | Santi |
+| Advanced data structures: Parquet partitioning, Kafka's partitioned log, approximate quantiles, keyed hashing | 1–2 | Karim + Santi |
+| Legal and ethical implications of combining the datasets: CC0, GDPR and pseudonymisation, API terms, the public `game_id` link, risk of false accusations | 2 | Fede + Mohamed |
+| Dashboard and insights | 2 | Mohamed |
+| Conclusions, limitations, further work | 2 | everyone (Mohamed edits) |
+
+### Writing rules
+
+- Each chapter covers: what we did, why (design decisions and alternatives), the results with numbers, at least one figure or table, and limitations.
+- **Every number comes from a file:** a CSV in `docs/validation_results/`, a job log or a `sacct` record. Note the source next to it while drafting, so it can be checked. Never write numbers from memory.
+- **No usernames and no `game_id`s** in any table, figure or screenshot. `game_id` is public on Lichess and reveals both players' usernames.
+- Wording: "flagged" or "high risk", never "cheater".
+- Draft your chapters as soon as your results exist; don't wait for the deadline. **All drafts by Wed 25 Nov.**
+
+**Presentation (10–15 min):** one slide per chapter group, a recorded demo of a game replay with risk scores updating live in the dashboard, and the scaling and evaluation charts.
+**Jury duty (graded individually):** everyone prepares 1–2 questions or insights for each other group.
 
 ---
 
