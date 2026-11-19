@@ -1,0 +1,23 @@
+# Serving layer and dashboard (workstream E2).
+# Paths point at small result files: start with the ones built from the Part 1 sample,
+# then switch to the full-data files Santi sends. A missing file is skipped with a warning.
+
+postgres:
+  # Overridden by the SERVING_DB_URL environment variable if it is set.
+  url: postgresql+psycopg2://localhost:5432/chess
+
+live_scores:
+  # A parquet file or a folder of parquet files (lake/scores/live_game/run_id=<id>/).
+  path: data/serving/scores_60k_games.parquet
+  run_id: oct-60k-sample
+
+# Optional tables: loaded as-is (same columns as the data dictionary) into serving.<table>.
+optional_tables:
+  baselines: data/serving/baselines.parquet          # L10 (or L12 baselines_provisional)
+  player_anomaly: data/serving/anomaly_player.parquet # L11
+  labels_summary: data/serving/labels_summary.csv     # workstream C
+  model_results: data/serving/model_results.csv       # workstream D
+
+dashboard:
+  high_risk_threshold: 1.0   # risk_score at or above this is shown as "high risk"
+  top_n_games: 50

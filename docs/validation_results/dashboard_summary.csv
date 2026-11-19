@@ -1,0 +1,2 @@
+games,player_games,players,scored,not_scored,high_risk,median,p90,p99,max,games_any_high,players_high_1plus,players_high_2plus
+60000,119886,41695,115620,4266,733,0.146,0.538,0.927,1.955,693,556,114
