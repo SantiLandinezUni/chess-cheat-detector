@@ -103,6 +103,11 @@ Setup steps for a new account are in `cluster/README.md`.
 
 - You are on the LOGIN node `rust`. Never run Spark, parsing or any heavy compute here.
   Editing files, pip install, git and submitting jobs are fine.
+- **Login node limits (since 20 Nov 2026):** each user gets at most 8 GB of memory on `rust` in total,
+  VS Code and editors included, and processes are stopped after 30 minutes of CPU time.
+  Any command that reads lake data (`data/lake/`, Parquet), even a quick check such as a schema, row count
+  or `pyarrow`/pandas read, must run via `srun -p interactive`, never directly on `rust`, e.g.
+  `srun -p interactive --cpus-per-task=2 --mem=8G --time=00:15:00 python check.py`.
 - Every shell / job must start with: `source cluster/env.sh` from the repo root (Java 17, Python 3.11, venv in `~/chess/venv`, `SPARK_LOCAL_DIRS=~/chess/spark-tmp`).
 - Compute nodes: fortran, haskell, julia (512 cores, 400–750 GB RAM each).
   Partitions: `cpu` (default, 7 days), `gpu` (3 days), `interactive` (8 h).
