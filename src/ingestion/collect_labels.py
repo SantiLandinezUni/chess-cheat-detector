@@ -18,6 +18,13 @@ resumes where it stopped. Usernames already in the table are skipped unless --re
 The NDJSON files are the durable record: run_local.sh drops the table on every clean run, so when
 it is empty it is first reloaded from the files (newest fetch wins). Only names missing from the
 files go to the API, which keeps labels and label_fetched_at identical between runs.
+
+Part 2, without PostgreSQL (cluster):
+    PYTHONPATH=. spark-submit src/ingestion/collect_labels.py --config config/cluster.yaml \
+        --from-sample --pause-s 20
+reads the players of lake/labels_sample (sample_labels.py), joins them to lake/restricted/identity
+for the usernames, and uses the NDJSON files themselves as the cache: names already in a
+profiles_/notfound_ file are skipped. HTTP 403 (access refused) stops the run at once; rerun later.
 Usernames are never logged (CLAUDE.md, Privacy rules).
 """
 
@@ -69,6 +76,55 @@ def next_batch_id(conn: psycopg2.extensions.connection | None) -> int:
         return cur.fetchone()[0]
 
 
+class AccessDenied(Exception):
+    """Lichess answered 403: the client is blocked for now, so further requests only make it worse."""
+
+
+def usernames_from_sample(cfg: dict[str, Any]) -> list[str]:
+    """Usernames of the players in lake/labels_sample, lowercase, sorted. Only the sample (~100k names)
+    reaches the driver; the join with the full identity table runs in Spark."""
+    from pyspark.sql import functions as F
+
+    from src.common.spark import get_spark
+
+    spark = get_spark(cfg, STEP)
+    lake = cfg["paths"]["lake_dir"]
+    sample = spark.read.parquet(f"{lake}/labels_sample").select("player_id")
+    identity = spark.read.parquet(f"{lake}/restricted/identity").select("player_id", "username")
+    joined = sample.join(identity, "player_id", "left")
+    n_sample, n_missing = sample.count(), joined.where(F.col("username").isNull()).count()
+    if n_missing:
+        log.warning("%d of %d sampled players have no row in restricted/identity", n_missing, n_sample)
+    names = sorted({r[0] for r in joined.where(F.col("username").isNotNull())
+                    .select(F.lower("username")).collect()})
+    spark.stop()
+    return names
+
+
+def batch_files(profiles_dir: Path) -> list[tuple[datetime, int, str, Path]]:
+    """(fetched_at, batch_id, kind, path) for every batch file, oldest first; other names are skipped."""
+    batches = []
+    for path in profiles_dir.glob("*.ndjson"):
+        m = BATCH_FILE_RE.match(path.name)
+        if not m:
+            log.warning("skipping file with unexpected name: %s", path.name)
+            continue
+        fetched_at = datetime.strptime(m.group(2), STAMP_FORMAT).replace(tzinfo=timezone.utc)
+        batches.append((fetched_at, int(m.group(3)), m.group(1), path))
+    return sorted(batches, key=lambda b: (b[0], b[1]))
+
+
+def cached_from_files(profiles_dir: Path) -> tuple[set[str], int]:
+    """Usernames already saved in the batch files, and the next free batch_id (cache without a database)."""
+    names: set[str] = set()
+    max_id = 0
+    for _, batch_id, kind, path in batch_files(profiles_dir):
+        key = "id" if kind == "profiles" else "username"
+        names.update(r[key] for r in read_ndjson(path))
+        max_id = max(max_id, batch_id)
+    return names, max_id + 1
+
+
 def read_ndjson(path: Path) -> list[dict[str, Any]]:
     with open(path, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
@@ -80,16 +136,7 @@ def reload_from_ndjson(conn: psycopg2.extensions.connection, profiles_dir: Path)
     Files are replayed oldest first (fetched_at, batch_id), so a later --refresh overwrites an
     earlier fetch of the same name. Returns (files read, rows in the table afterwards).
     """
-    batches = []
-    for path in profiles_dir.glob("*.ndjson"):
-        m = BATCH_FILE_RE.match(path.name)
-        if not m:
-            log.warning("reload: skipping file with unexpected name: %s", path.name)
-            continue
-        fetched_at = datetime.strptime(m.group(2), STAMP_FORMAT).replace(tzinfo=timezone.utc)
-        batches.append((fetched_at, int(m.group(3)), m.group(1), path))
-    batches.sort(key=lambda b: (b[0], b[1]))
-
+    batches = batch_files(profiles_dir)
     sql = UPSERT_SQL.read_text(encoding="utf-8")
     with conn.cursor() as cur:
         for fetched_at, batch_id, kind, path in batches:
@@ -115,6 +162,8 @@ def fetch_batch(session: requests.Session, names: list[str], lichess: dict[str, 
             if resp.status_code == 200:
                 return resp.json()
             reason = f"HTTP {resp.status_code}"
+            if resp.status_code == 403:
+                raise AccessDenied(reason)
             if resp.status_code != 429 and resp.status_code < 500:
                 resp.raise_for_status()  # 4xx other than 429: retrying won't help
         except requests.ConnectionError as e:
@@ -159,9 +208,15 @@ def main() -> None:
     parser.add_argument("--usernames", help="comma-separated usernames to fetch instead of restricted.identity")
     parser.add_argument("--refresh", action="store_true", help="refetch usernames already fetched")
     parser.add_argument("--no-db", action="store_true", help="write NDJSON only (no cache, no PostgreSQL)")
+    parser.add_argument("--from-sample", action="store_true",
+                        help="Part 2: fetch the players of lake/labels_sample; NDJSON files are the cache, no PostgreSQL")
+    parser.add_argument("--pause-s", type=float, default=0.0,
+                        help="seconds to wait between requests, to stay under Lichess's rate limit (default 0)")
     args = parser.parse_args()
     if args.no_db and not args.usernames:
         parser.error("--no-db needs --usernames (the default list comes from restricted.identity)")
+    if args.from_sample and (args.usernames or args.no_db):
+        parser.error("--from-sample can't be combined with --usernames or --no-db")
 
     cfg = load_config(args.config, args.months)
     setup_logging(STEP, cfg["paths"]["log_dir"])
@@ -169,27 +224,34 @@ def main() -> None:
     out_dir = Path(cfg["paths"]["profiles_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    conn = None if args.no_db else connect(cfg)
+    conn = None if (args.no_db or args.from_sample) else connect(cfg)
     with log_duration(log, STEP):
         if conn is not None and not cached_usernames(conn):
             with log_duration(log, "reload restricted.user_profiles_raw from NDJSON"):
                 n_files, n_rows = reload_from_ndjson(conn, out_dir)
             log.info("reloaded %d rows from %d files in %s", n_rows, n_files, out_dir)
 
-        if args.usernames:
-            requested = sorted({u.strip().lower() for u in args.usernames.split(",") if u.strip()})
-            source = "--usernames"
+        if args.from_sample:
+            requested = usernames_from_sample(cfg)
+            source = "lake/labels_sample"
+            file_cache, first_id = cached_from_files(out_dir)
+            cached = set() if args.refresh else file_cache
         else:
-            requested = usernames_from_identity(conn)
-            source = "restricted.identity"
-        cached = set() if (conn is None or args.refresh) else cached_usernames(conn)
+            if args.usernames:
+                requested = sorted({u.strip().lower() for u in args.usernames.split(",") if u.strip()})
+                source = "--usernames"
+            else:
+                requested = usernames_from_identity(conn)
+                source = "restricted.identity"
+            cached = set() if (conn is None or args.refresh) else cached_usernames(conn)
+            first_id = next_batch_id(conn)
         todo = [u for u in requested if u not in cached]
-        log.info("source=%s requested=%d cached_skipped=%d to_fetch=%d refresh=%s db=%s",
-                 source, len(requested), len(requested) - len(todo), len(todo), args.refresh, conn is not None)
+        log.info("source=%s requested=%d cached_skipped=%d to_fetch=%d refresh=%s db=%s pause_s=%s",
+                 source, len(requested), len(requested) - len(todo), len(todo), args.refresh,
+                 conn is not None, args.pause_s)
 
         batch_size = lichess["batch_size"]
         batches = [todo[i:i + batch_size] for i in range(0, len(todo), batch_size)]
-        first_id = next_batch_id(conn)
         n_found = n_missing = n_tos = n_disabled = 0
         failed: list[int] = []
 
@@ -197,10 +259,18 @@ def main() -> None:
         session.headers["User-Agent"] = lichess["user_agent"]
         for i, names in enumerate(batches):
             batch_id = first_id + i
+            if i and args.pause_s:
+                time.sleep(args.pause_s)
             # Whole seconds: the value is stored in the file name and must reload identically
             fetched_at = datetime.now(timezone.utc).replace(microsecond=0)
             try:
                 profiles = fetch_batch(session, names, lichess)
+            except AccessDenied as e:
+                not_tried = list(range(batch_id, first_id + len(batches)))
+                log.error("%s: Lichess refused access; stopping with %d batch(es) left. Rerun later "
+                          "(saved batches are skipped)", e, len(not_tried))
+                failed.extend(not_tried)
+                break
             except Exception as e:  # one bad batch doesn't stop the run; it isn't saved, so a rerun retries it
                 log.error("batch %d (%d names) failed: %s", batch_id, len(names), e)
                 failed.append(batch_id)
