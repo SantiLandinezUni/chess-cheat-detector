@@ -26,10 +26,17 @@ reads the players of lake/labels_sample (sample_labels.py), joins them to lake/r
 for the usernames, and uses the NDJSON files themselves as the cache: names already in a
 profiles_/notfound_ file are skipped. HTTP 403 (access refused) stops the run at once; rerun later.
 Usernames are never logged (CLAUDE.md, Privacy rules).
+
+Optional authentication: if LICHESS_API_TOKEN is set (in .env or the environment), every request sends
+it as a Bearer token. Lichess documents higher limits for authenticated /api/users calls (10,000 users
+per 10 minutes, 150,000 per day; "fewer when the request is anonymous"). A personal token with no scopes
+is enough (https://lichess.org/account/oauth/token). The token is never logged; HTTP 401 (token rejected)
+stops the run at once, like 403.
 """
 
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -162,7 +169,7 @@ def fetch_batch(session: requests.Session, names: list[str], lichess: dict[str, 
             if resp.status_code == 200:
                 return resp.json()
             reason = f"HTTP {resp.status_code}"
-            if resp.status_code == 403:
+            if resp.status_code in (401, 403):  # 401 = token rejected, 403 = access refused
                 raise AccessDenied(reason)
             if resp.status_code != 429 and resp.status_code < 500:
                 resp.raise_for_status()  # 4xx other than 429: retrying won't help
@@ -257,6 +264,10 @@ def main() -> None:
 
         session = requests.Session()
         session.headers["User-Agent"] = lichess["user_agent"]
+        token = os.getenv("LICHESS_API_TOKEN", "").strip()  # .env was loaded by load_config
+        if token:
+            session.headers["Authorization"] = f"Bearer {token}"
+        log.info("authenticated=%s (LICHESS_API_TOKEN %s)", bool(token), "set" if token else "not set")
         for i, names in enumerate(batches):
             batch_id = first_id + i
             if i and args.pause_s:
