@@ -55,6 +55,11 @@ lichess:
   max_tries: 3
   user_agent: "chess-cheat-detector/0.1 (IE University student project; github.com/SantiLandinezUni/chess-cheat-detector)"
 
+lake:
+  # Parquet file size the lake's partitioned tables aim for (src/common/compaction.py): parse_chunked
+  # compacts each month to ceil(partition size / target_file_mb) files; see docs/partition_compaction_proposal.md
+  target_file_mb: 128
+
 quality:
   elo_min: 400
   elo_max: 3500

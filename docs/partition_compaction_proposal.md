@@ -1,6 +1,13 @@
 # Partition skew in lake/games and lake/moves: measurement and proposed fix (feedback 3.2)
 
-Status: **proposal only. The lake has not been rewritten.** Compaction waits for approval.
+Status: **approved 24 Nov 2026** (conditions: run only after every job that reads the lake has finished;
+time two read queries before and after; delete the old lake only once rows and checksums match).
+Implemented in `src/common/compaction.py`, `src/quality/compact_lake.py` and `cluster/compact_lake.sbatch`;
+`parse_chunked.py` now compacts each month before the swap (section 4). Results, with timings and
+space freed: [`validation_results/partition_compaction.csv`](validation_results/partition_compaction.csv).
+As implemented: the old lake goes to `lake/_old_compaction/<stamp>/` during the swap. The swap is refused
+while another job from a chess-cheat-detector checkout is running, and `quarantine/` is compacted by
+`parse_chunked` for new months only (it is small).
 
 ## Measurement
 
@@ -95,7 +102,7 @@ reads ~43 GB of staged Parquet per month, minutes next to the ~2 h parse. After 
 `n_files` only affects staging. `parse_games.py` (single input, `local[N]`) has the same pattern at
 smaller scale and can use the same function.
 
-## Decision needed
+## Decision
 
-- Approve the 128 MB target and the copy → verify → swap plan.
-- Confirm there is ~128 GB of free space on home (or another location) for the temporary copy.
+Approved on 24 Nov 2026 with a 128 MB target and the copy → verify → swap plan. Home is a 30 TB ZFS
+share with 21 TB free, so the temporary copy fits (no per-user quota tool on rust to check further).
