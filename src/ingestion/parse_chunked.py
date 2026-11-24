@@ -10,8 +10,8 @@ boundary (the parser's record delimiter "\\n\\n[Event "), so every chunk starts 
 game. Each chunk is parsed with parse_games' code, appended to a staging area in the lake and
 deleted before the next one is decompressed (zstd waits meanwhile).
 
-After the last chunk, the month's games, moves and quarantine partitions are swapped in from
-staging, identity_by_month is deduplicated across chunks, and restricted/identity is rebuilt once.
+After the last chunk, the staged games, moves and quarantine are rewritten to right-sized files
+(lake.target_file_mb, default 128 MB per file; src/common/compaction.py) and swapped in from staging, identity_by_month is deduplicated across chunks, and restricted/identity is rebuilt once.
 A run that fails leaves the lake's previous data for the month untouched; a rerun starts over.
 Identity staging stays under restricted/ (it holds usernames).
 """
@@ -27,6 +27,7 @@ from typing import BinaryIO
 
 from pyspark.sql import functions as F
 
+from src.common.compaction import compact_table, target_file_mb
 from src.common.config import build_arg_parser, expand_path, load_config
 from src.common.ids import load_hash_key
 from src.common.logging_setup import log_duration, setup_logging
@@ -117,7 +118,8 @@ def main() -> None:
              month, zst, zst.stat().st_size / 1e9, chunk_bytes / 1e9, args.work_dir, lake)
 
     spark = get_spark(cfg, STEP, python_heavy=True)
-    n_files = spark.sparkContext.defaultParallelism  # = N cores: fewer, larger files per chunk
+    # Per chunk: at most N files per partition (staging only); the month is compacted before the swap
+    n_files = spark.sparkContext.defaultParallelism
     totals: Counter[str] = Counter()
     with log_duration(log, STEP):
         proc = subprocess.Popen(["zstd", "-dc", str(zst)], stdout=subprocess.PIPE)
@@ -149,9 +151,16 @@ def main() -> None:
                         .select("player_id", "username", "source_month"))
             write_parquet(by_month, str(lake / "restricted" / "identity_by_month"), ["source_month"])
 
+        # Each chunk appended up to N files to every partition (~700 small files per partition and month):
+        # rewrite the staged month to ~target_mb files per partition before it goes into the lake
+        target_mb, compacted = target_file_mb(cfg), stage / "_compacted"
+        with log_duration(log, f"compact staged {month} to ~{target_mb:.0f} MB files"):
+            for t in TABLES:
+                compact_table(spark, stage / t, compacted / t, t, target_mb, log)
+
         with log_duration(log, f"swap {month} into games, moves, quarantine"):
             for t in TABLES:
-                swap_month(stage / t, lake / t, month)
+                swap_month(compacted / t, lake / t, month)
 
         rebuild_identity(spark, str(lake), log)
         for d in (stage, stage_identity):

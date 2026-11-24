@@ -66,12 +66,12 @@ chess-cheat-detector/
 ├── config/
 │   ├── local.yaml          # paths, spark master local[4], driver memory 3g, months, sample size
 │   └── cluster.yaml        # same keys; paths under paths.data_dir, Spark settings "auto" from the Slurm job
-├── cluster/                # Slurm cluster: env.sh, parse*.sbatch, features.sbatch, baselines_provisional.sbatch, baselines_by_month.sbatch, partition_sizes.sbatch, kafka_job.sh/.sbatch, consumer_scaling.sh, scorer_scaling.sh/.sbatch, spark_test.py/.sbatch, README.md (setup steps)
+├── cluster/                # Slurm cluster: env.sh, parse*.sbatch, features.sbatch, baselines_provisional.sbatch, baselines_by_month.sbatch, partition_sizes.sbatch, compact_lake.sbatch, kafka_job.sh/.sbatch, consumer_scaling.sh, scorer_scaling.sh/.sbatch, spark_test.py/.sbatch, README.md (setup steps)
 ├── src/
-│   ├── common/             # config.py, spark.py (session factory), logging_setup.py, ids.py (HMAC)
+│   ├── common/             # config.py, spark.py (session factory), logging_setup.py, ids.py (HMAC), compaction.py (right-sized Parquet files)
 │   ├── ingestion/          # parse_games.py, collect_labels.py, build_labels.py
 │   ├── db/                 # load_postgres.py, load_labels.py
-│   ├── quality/            # checks.py, partition_sizes.py (file count/size per lake partition)
+│   ├── quality/            # checks.py, partition_sizes.py (file count/size per lake partition), compact_lake.py (one-off lake compaction)
 │   └── streaming/          # replay_producer.py, count_consumer.py, consumer_group.py, baselines_provisional.py, baselines_by_month.py, scorer.py, scorer_group.py (Kafka, Part 2)
 ├── sql/
 │   ├── schema.sql          # schemas core, ref, restricted + all CREATE TABLE
