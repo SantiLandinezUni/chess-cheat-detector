@@ -182,6 +182,20 @@ srun -p interactive --cpus-per-task=16 --mem=32G --time=01:00:00 cluster/consume
 
 It writes one row per run to `docs/validation_results/consumer_scaling.csv` (only if every run succeeded): group throughput = all messages / (last message received by any member − first one), latency percentiles over every message of every member, and the producer's own send rate (`producer_msg_s`), which caps the group throughput.
 
+**Shutdown and time limit.** `kafka_job.sh` touches `$KAFKA_PRODUCER_DONE` when the producer exits, then waits for the consumer's whole process group (every scorer, not only the parent) before it stops the broker. `STOP_RESERVE_S` (300) seconds before the job's end time it stops the run itself: producer first, then the consumer with `SIGTERM` and up to `CONSUMER_STOP_GRACE_S` (150) s for each process to write its output, then the broker; the exit status is 124 and the consumer logs how much it processed. `CONSUMER_WAIT_S` (default 0 = no limit) is only an optional cap. Keep `--signal=B:TERM@...` of the sbatch above `CONSUMER_STOP_GRACE_S` + 10.
+
+**Scorer group.** `src/streaming/scorer_group.py` runs N scorers in one consumer group. Members commit their offsets after every batch and never stop on their own: the group stops them all together once the producer is done and the group's lag is 0 (fix for job 32798, see `src/streaming/scorer.py`). A partition that moves to another member takes the state of its open games with it (snapshots in `lichess.scorer_state`). Each run checks that every game is scored exactly once (games scored = games sent, no duplicate rows, no move read twice). Scaling test, 1,000 games at 100× and 60,000 games without pacing through 1, 2 and 4 scorers:
+
+```bash
+OUT_CSV=docs/validation_results/scorer_scaling_final.csv sbatch cluster/scorer_scaling.sbatch 2026-10 60000
+```
+
+Forced-rebalance test: the same replays, each run twice, once with scorer 0 leaving the group while the producer is still sending; the final scores must be identical to the run without a rebalance (`docs/validation_results/scorer_rebalance.csv`):
+
+```bash
+sbatch cluster/scorer_rebalance.sbatch 2026-10
+```
+
 ## 9. Strong-scaling test of the parser
 
 Parses the same input, the first 20 GB chunk of 2026-10 (8,568,719 games), with 16, 32, 64 and 128 CPUs, 3 GB of memory per CPU. All output goes to a throwaway lake on the node's `/scratch` (deleted at the end); the step refuses to write inside `data/`. From the repo root:

@@ -4,7 +4,10 @@
 #   1. paced:     PACED_GAMES games (1000) at PACED_SPEED (100x) through 1 scorer
 #   2. no pacing: GAMES games (60000) as fast as possible, through 1, 2 and 4 scorers in one group
 # One CSV row per run (src/streaming/scorer_group.py): throughput, score latency (move sent -> score
-# emitted) and ack latency (-> score acknowledged by the broker).
+# emitted) and ack latency (-> score acknowledged by the broker), and the exactly-once checks: every run
+# fails unless games_scored = games sent, duplicate_rows = 0 and reread_messages = 0 (each game scored
+# exactly once, nothing read twice). The group stops when the producer is done and its lag is 0.
+# A run stopped at the job's time limit (kafka_job.sh exit 124) skips the remaining runs.
 # Needs the scorer's baselines (paths.scorer_baselines_dir: lake/baselines from cluster/features.sbatch,
 # or lake/baselines_provisional from cluster/baselines_provisional.sbatch).
 # Run it inside a job, from the repo root (or with cluster/scorer_scaling.sbatch):
@@ -47,7 +50,7 @@ one_run() {
     local tag="$1" speed="$2" games="$3" n="$4"
     local psum="logs/streaming/producer-$SLURM_JOB_ID-$tag.json"
     echo "########## run=$tag speed=$speed games=$games scorers=$n  $(date -u +%FT%TZ)"
-    RUN_TAG="$tag" EXTRA_TOPICS="lichess.scores" \
+    RUN_TAG="$tag" EXTRA_TOPICS="lichess.scores lichess.scorer_state" \
     CONSUMER_CMD="python src/streaming/scorer_group.py --config $CONFIG --consumers $n --run-id $SLURM_JOB_ID-$tag --emit-every $EMIT_EVERY --csv $RUN_CSV --producer-summary $psum" \
     PRODUCER_CMD="spark-submit --driver-memory 6g src/streaming/replay_producer.py --config $CONFIG --month $MONTH --max-games $games --speed $speed --cache-dir $CACHE --summary-out $psum" \
         bash cluster/kafka_job.sh &
@@ -59,12 +62,21 @@ one_run() {
     return "$status"
 }
 
+# run <tag> <speed> <games> <consumers>: one_run, and stop the whole test once a run hit the time limit
+run() {
+    (( TIME_UP )) && { echo "########## run=$1 skipped: an earlier run hit the job's time limit"; STATUS=1; return; }
+    local status=0
+    one_run "$@" || status=$?
+    (( status == 124 )) && TIME_UP=1  # kafka_job.sh TIME_LIMIT_EXIT
+    (( status == 0 )) || STATUS=1
+}
+
 echo "job=$SLURM_JOB_ID node=$(hostname) cpus=$SLURM_CPUS_PER_TASK month=$MONTH baselines=$BASELINES"
 echo "paced: $PACED_GAMES games at ${PACED_SPEED}x, 1 scorer; no pacing: $GAMES games, scorers=($CONSUMERS)"
-STATUS=0
-one_run "speed$PACED_SPEED-c1" "$PACED_SPEED" "$PACED_GAMES" 1 || STATUS=1
+STATUS=0 TIME_UP=0
+run "speed$PACED_SPEED-c1" "$PACED_SPEED" "$PACED_GAMES" 1
 for n in $CONSUMERS; do
-    one_run "nopacing-c$n" 0 "$GAMES" "$n" || STATUS=1
+    run "nopacing-c$n" 0 "$GAMES" "$n"
 done
 
 echo "########## results ($RUN_CSV)"
