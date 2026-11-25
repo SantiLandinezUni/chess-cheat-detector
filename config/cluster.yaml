@@ -59,6 +59,9 @@ lake:
   # Parquet file size the lake's partitioned tables aim for (src/common/compaction.py): parse_chunked
   # compacts each month to ceil(partition size / target_file_mb) files; see docs/partition_compaction_proposal.md
   target_file_mb: 128
+  # Codec of every Parquet file the pipeline writes (Spark via get_spark, pyarrow writers via
+  # parquet_codec). zstd: -27% vs snappy at the same speed (docs/validation_results/compaction_tuning.csv)
+  parquet_codec: zstd
 
 quality:
   elo_min: 400

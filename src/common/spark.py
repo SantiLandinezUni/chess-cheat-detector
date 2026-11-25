@@ -7,6 +7,8 @@ from typing import Any
 
 from pyspark.sql import SparkSession
 
+from src.common.config import parquet_codec
+
 log = logging.getLogger(__name__)
 
 SHUFFLE_PARTITIONS_PER_CORE = 3  # "auto" shuffle partitions = 3 x Slurm CPUs
@@ -72,6 +74,8 @@ def get_spark(cfg: dict[str, Any], app_name: str, use_postgres: bool = False,
         .config("spark.driver.memory", s["driver_memory"])
         .config("spark.sql.shuffle.partitions", s["shuffle_partitions"])
         .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
+        # Codec of every Parquet write (lake.parquet_codec, zstd); readers detect it per file
+        .config("spark.sql.parquet.compression.codec", parquet_codec(cfg))
         .config("spark.sql.session.timeZone", "UTC")
         # toPandas() on timestamp columns crashes without Arrow (PySpark 3.5 + pandas 2.x)
         .config("spark.sql.execution.arrow.pyspark.enabled", "true")

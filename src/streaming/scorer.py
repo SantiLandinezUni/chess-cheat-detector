@@ -56,7 +56,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from confluent_kafka import KafkaException, Producer
 
-from src.common.config import build_arg_parser, load_config
+from src.common.config import build_arg_parser, load_config, parquet_codec
 from src.common.logging_setup import setup_logging
 from src.streaming.common import TOPIC_SCORES, default_bootstrap, default_topic
 from src.streaming.count_consumer import latency_stats, make_consumer
@@ -324,13 +324,13 @@ class Scorer:
             self.finish(gid, reason)
 
 
-def write_final(rows: list[dict[str, Any]], out_dir: Path, name: str) -> Path | None:
+def write_final(rows: list[dict[str, Any]], out_dir: Path, name: str, codec: str = "zstd") -> Path | None:
     """Final scores of this member to <out_dir>/part-<name>.parquet (overwrites a rerun's file)."""
     if not rows:
         return None
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"part-{name}.parquet"
-    pq.write_table(pa.Table.from_pylist(rows, schema=FINAL_SCHEMA), path)
+    pq.write_table(pa.Table.from_pylist(rows, schema=FINAL_SCHEMA), path, compression=codec)
     return path
 
 
@@ -466,7 +466,7 @@ def main() -> None:
     finally:
         consumer.close()
 
-    path = write_final(scorer.final_rows, out_dir, args.name)
+    path = write_final(scorer.final_rows, out_dir, args.name, parquet_codec(cfg))
     log.info("final scores: %d rows -> %s", len(scorer.final_rows), path)
     if args.latency_out:
         np.savez(args.latency_out, score=np.asarray(scorer.latency_ms, dtype=np.int64),

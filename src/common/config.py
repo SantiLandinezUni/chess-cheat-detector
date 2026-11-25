@@ -53,6 +53,11 @@ def load_config(config_path: str, months: list[str] | None = None) -> dict[str, 
     return cfg
 
 
+def parquet_codec(cfg: dict[str, Any]) -> str:
+    """Parquet compression codec for every write (lake.parquet_codec, default zstd)."""
+    return str((cfg.get("lake") or {}).get("parquet_codec", "zstd"))
+
+
 def pgn_path(cfg: dict[str, Any], month: str) -> str:
     """Input PGN path for one dump month."""
     return cfg["input"]["pgn_pattern"].format(month=month)

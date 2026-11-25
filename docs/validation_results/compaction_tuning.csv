@@ -1,0 +1,7 @@
+variant,description,games_files,games_mb,moves_files,moves_mb,total_mb,total_vs_a_pct,write_s,rows_and_checksums_match,q_count_first_s,q_count_median_s,q_percentiles_first_s,q_percentiles_median_s,query_results_match_a,plain_encoded_id_columns
+lake,partition as it is in the lake now (home),15,2466.7,148,23464.3,25931.0,-2.3,,,,,,,,games:black_id games:game_id games:white_id moves:game_id moves:player_id
+a,"current: hash(game_id) files, sorted by game_id[, ply], snappy",15,2466.7,148,24074.9,26541.6,0.0,173.7,True,1.94,1.42,38.79,38.44,True,games:black_id games:game_id games:white_id moves:game_id moves:player_id
+b,"as a, zstd",15,1535.7,148,17747.5,19283.2,-27.3,167.6,True,1.66,1.52,37.68,39.49,True,games:black_id games:game_id games:white_id moves:game_id moves:player_id
+c,"range files by game start, sorted by started_at, game_id[, ply], snappy",15,2461.6,148,23717.9,26179.5,-1.4,295.9,True,1.42,1.42,37.24,38.71,True,games:black_id games:game_id games:white_id moves:game_id moves:player_id
+d,"as c, zstd",15,1526.6,148,17330.3,18856.9,-29.0,302.5,True,1.57,1.57,39.79,39.79,True,games:black_id games:game_id games:white_id moves:game_id moves:player_id
+e,"as d (smallest of a-d), dictionary page 8 MB",15,1518.6,148,17426.5,18945.1,-28.6,305.3,True,1.54,1.51,40.16,40.77,True,games:black_id games:game_id games:white_id
