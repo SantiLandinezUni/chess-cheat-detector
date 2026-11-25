@@ -23,7 +23,7 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +42,13 @@ DEFAULT_TIME_CLASSES = ["ultrabullet", "bullet", "blitz", "rapid", "classical"]
 PROGRESS_EVERY_S = 10.0
 
 log = logging.getLogger(STEP)
+
+
+def parse_start_utc(text: str) -> datetime:
+    """--start as an aware UTC datetime. A time without an offset is UTC (not the node's local time,
+    which PySpark would use for a naive datetime literal); a time with an offset is converted to UTC."""
+    dt = datetime.fromisoformat(text)
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
 
 
 def select_games(spark: SparkSession, lake_dir: str, month: str, max_games: int,
@@ -76,8 +83,10 @@ def load_moves(spark: SparkSession, lake_dir: str, month: str, games: DataFrame,
 def cache_file(cache_dir: str, month: str, max_games: int, start: datetime | None,
                time_classes: list[str]) -> Path:
     """Cache file name for one selection (month, number of games, start, time classes).
-    v2: with base_seconds and is_last (caches written before these fields are not reused)."""
-    start_tag = start.strftime("%Y%m%dT%H%M%S") if start else "monthstart"
+    v2: with base_seconds and is_last (caches written before these fields are not reused).
+    The start tag is UTC and ends in Z: caches selected before --start was read as UTC have no Z
+    and are not reused."""
+    start_tag = start.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ") if start else "monthstart"
     return Path(cache_dir) / f"replay_v2_{month}_{max_games}g_{start_tag}_{'-'.join(sorted(time_classes))}.parquet"
 
 
@@ -192,8 +201,9 @@ def main() -> None:
     parser.add_argument("--max-games", type=int, default=1000, help="number of games (default 1000)")
     parser.add_argument("--speed", type=float, default=1.0,
                         help="speed-up factor for the original timing; 0 = no pacing (default 1)")
-    parser.add_argument("--start", type=datetime.fromisoformat,
-                        help="UTC start of the game window, e.g. 2026-10-15T18:00 (default: start of the month)")
+    parser.add_argument("--start", type=parse_start_utc,
+                        help="start of the game window, e.g. 2026-10-15T18:00; UTC unless it has an offset "
+                             "(default: start of the month)")
     parser.add_argument("--time-classes", type=lambda s: [t.strip() for t in s.split(",") if t.strip()],
                         default=DEFAULT_TIME_CLASSES,
                         help="comma-separated time classes (default: all except correspondence)")

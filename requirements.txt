@@ -12,3 +12,5 @@ confluent-kafka>=2.10,<3
 psycopg2-binary>=2.9
 matplotlib>=3.8
 jupyter
+# Tests (run on the login node: PYTHONPATH=. pytest tests)
+pytest>=8

@@ -4,7 +4,8 @@ Reads topic lichess.moves (data dictionary §8) and keeps, for each player of ea
 timing statistics: number of moves, move-time mean and coefficient of variation (cv), share of fast
 moves, and behaviour when the clock is low. Each player is mapped to a rating band from the message's
 `elo` (ref.rating_bands) and compared with the baseline of that band x `time_class`
-(paths.scorer_baselines_dir: rows with level "game" and the layout of lake/baselines, L10).
+(paths.scorer_baselines_dir: rows with level "game" of lake/baselines, L10; or of the provisional
+lake/baselines_provisional, L12, which has the same layout; correspondence cells are ignored).
 Every --emit-every moves of a player, and for both players at the end of the game, it sends a score
 message to topic lichess.scores (data dictionary §9). Final scores also go to a small Parquet table for
 the dashboard, paths.live_scores_dir/run_id=<run>/part-<name>.parquet (L13; hashed player_id only).
@@ -73,6 +74,8 @@ CONFIDENCE_K = 20        # confidence = n_timed / (n_timed + K): 0.33 at 10 move
 Z_CAP = 5.0
 IQR_TO_SD = 1.349
 SCORED = ("move_time_cv", "share_moves_under_2s", "move_time_cv_low_clock")  # low = suspicious
+EXCLUDED_TIME_CLASSES = ("correspondence",)  # not scored: outside the baseline population (L12, §9)
+BASELINE_COLUMNS = ["level", "band_id", "time_class", "feature", "n", "sd", "p25", "p50", "p75"]
 BATCH = 10_000
 SWEEP_EVERY_S = 5.0
 DEFAULT_EMIT_EVERY = 10
@@ -118,9 +121,16 @@ def band_of(elo: int | None) -> int | None:
 
 
 def load_baselines(path: str) -> Baselines:
-    """Center (p50) and robust scale per (band, time class, scored feature) from a lake/baselines-style table."""
-    df = pd.read_parquet(path, columns=["level", "band_id", "time_class", "feature", "n", "sd", "p25", "p50", "p75"])
-    df = df[(df["level"] == BASELINE_LEVEL) & df["feature"].isin(SCORED) & (df["n"] >= MIN_CELL_GAMES)]
+    """Center (p50) and robust scale per (band, time class, scored feature) from a lake/baselines-style table.
+
+    Reads L10 (lake/baselines, workstream B) or L12 (lake/baselines_provisional): same columns and
+    level-"game" rows (mapping in data dictionary §9). L10 also has correspondence cells (L8 keeps those
+    games); they are dropped so the population matches L12 and the replay producer: no BOT games, no
+    0-move games (both tables), no correspondence.
+    """
+    df = pd.read_parquet(path, columns=BASELINE_COLUMNS)
+    df = df[(df["level"] == BASELINE_LEVEL) & df["feature"].isin(SCORED)
+            & ~df["time_class"].isin(EXCLUDED_TIME_CLASSES) & (df["n"] >= MIN_CELL_GAMES)]
     out: Baselines = {}
     for r in df.itertuples(index=False):
         iqr_scale = (r.p75 - r.p25) / IQR_TO_SD if pd.notna(r.p75) and pd.notna(r.p25) else 0.0

@@ -1,6 +1,6 @@
 # Data Dictionary — Chess Cheat Detector (Part 1)
 
-Version 1.2 · Last updated 13 Nov 2026 (Part 2: L12–L13, `lichess.moves` fields `base_seconds` and `is_last`, §9 `lichess.scores`)
+Version 1.3 · Last updated 25 Nov 2026 (Part 2: the streaming scorer reads L10; §9 baseline mapping L10 ↔ L12)
 
 This file is the single source of truth for every dataset in the project. Code must match it; when code changes a column, update this file in the same commit.
 
@@ -18,7 +18,7 @@ This file is the single source of truth for every dataset in the project. Code m
 | S4 | Reference and derived tables | SQL-generated | `sql/generate_reference.sql`, `sql/generate_derived.sql` | `ref.*`, `core.players`, `core.baselines` |
 | L1–L5 | Parquet lake | Parquet | Written by `parse_games.py` | `data/lake/{games,moves,quarantine,restricted/identity,restricted/identity_by_month}` |
 | L6–L11 | Derived tables, features, baselines, anomaly scores (Part 2) | Parquet | Written by `src/features/*.py` (`cluster/features.sbatch`) | `data/lake/{derived/players,derived/baselines_part1,features/game_player,features/player,baselines,anomaly/player}` |
-| L12–L13 | Provisional scorer baselines, live game scores (Part 2) | Parquet | `src/streaming/baselines_provisional.py`, `src/streaming/scorer.py` | `data/lake/{baselines_provisional,scores/live_game}` |
+| L12–L13 | Provisional scorer baselines (now an option), live game scores (Part 2) | Parquet | `src/streaming/baselines_provisional.py`, `src/streaming/scorer.py` | `data/lake/{baselines_provisional,scores/live_game}` |
 | K1 | Kafka topic `lichess.moves` | JSON messages | `replay_producer.py` (lake replay); live producer later | Kafka broker inside a Slurm job (`cluster/kafka_job.sh`) |
 | K2 | Kafka topic `lichess.scores` | JSON messages | `src/streaming/scorer.py` | same broker |
 
@@ -233,7 +233,7 @@ Grain: one row per (`player_id`, `time_class`) for players with `n_games ≥ 5` 
 
 ### L12 — `baselines_provisional` (Part 2, `src/streaming/baselines_provisional.py`)
 
-Stand-in for L10 until workstream B's table runs on the full data; the streaming scorer reads whichever folder `paths.scorer_baselines_dir` in `config/*.yaml` names, so switching to L10 is a config change only. **Same columns, types and grain as L10.** Not partitioned; overwritten. Population: the months of the run, games with `has_bot = false`, `n_plies > 0` and `time_class ≠ correspondence`. Timing uses moves with `move_time_s ≥ 0`; bands are those of `ref.rating_bands` from the mover's pre-game Elo. Percentiles approximate (`percentile_approx`, accuracy 10,000). Differences from L10:
+Stand-in for L10 until workstream B's table existed; the streaming scorer's baselines until 25 Nov 2026 (runs 29064, 32798). The scorer now reads L10 (`paths.scorer_baselines_dir` in `config/*.yaml`); L12 stays an option, selected with that key or `--baselines` (mapping in §9). **Same columns, types and grain as L10.** Not partitioned; overwritten. Population: the months of the run, games with `has_bot = false`, `n_plies > 0` and `time_class ≠ correspondence`. Timing uses moves with `move_time_s ≥ 0`; bands are those of `ref.rating_bands` from the mover's pre-game Elo. Percentiles approximate (`percentile_approx`, accuracy 10,000). Differences from L10:
 
 | `level` | Rows |
 |---|---|
@@ -528,9 +528,25 @@ Written by `src/streaming/scorer.py`. One message per player each time the playe
 Per player per game, updated with every move:
 
 1. **Running statistics** with the L8 definitions: only moves with `move_time ≥ 0` are timed; a move is very fast under 2 s; low clock = `clock < 0.10 × base_seconds`.
-2. **Band:** `band_id` of the message's `elo`; **baseline cell:** that band × `time_class` in the table at `paths.scorer_baselines_dir`, rows with `level = game` (L12, or L10 once it exists). Cells with fewer than 30 player-games are not used.
+2. **Band:** `band_id` of the message's `elo`; **baseline cell:** that band × `time_class` in the table at `paths.scorer_baselines_dir`, rows with `level = game`: L10 (`lake/baselines`, default since 25 Nov 2026) or L12 (`lake/baselines_provisional`, option); mapping below. Cells with fewer than 30 player-games are not used. `correspondence` is never scored (no baseline cell).
 3. **Robust z** for three features, as in L11: `z = (x − p50) / ((p75 − p25) / 1.349)`, or `/ sd` when the IQR is 0. A feature is scored only with at least 10 timed moves (`move_time_cv`, `share_moves_under_2s`) or 5 timed low-clock moves (`move_time_cv_low_clock`).
 4. **Suspicious direction only:** low values are suspicious for all three: very even move timing, still even under time pressure, and few instant moves (engine relay makes even obvious moves take time). Term = `min(5, max(0, −z))`.
 5. **risk_score** = mean of the available terms × `confidence`, with `confidence = n_timed / (n_timed + 20)` (0.33 after 10 timed moves, 0.67 after 40). Running values of an unfinished game are compared with full-game baselines, so scores built on few moves are discounted.
 
 The score is a heuristic ranking for "high risk" games, not a probability and not a label. Engine-derived features (`eval`) are not used yet.
+
+### Baselines the scorer reads: L10 ↔ L12
+
+`load_baselines` in `scorer.py` reads either table by column name; nothing is renamed. Both have the same columns, types and grain (`level`, `band_id`, `time_class`, `feature`, `n`, `mean`, `sd`, `p01`…`p99`, `computed_at`).
+
+| What the scorer uses | L10 `baselines` (default) | L12 `baselines_provisional` (option) |
+|---|---|---|
+| Rows | `level = game` (`player` rows ignored) | `level = game` (`move` rows ignored) |
+| Features | `move_time_cv`, `share_moves_under_2s`, `move_time_cv_low_clock`: same names and L8 definitions in both | same |
+| Keys | `band_id` (smallint, `ref.rating_bands` of the mover's pre-game Elo), `time_class` | same |
+| Columns read | `n` (player-games with a non-null value), `sd`, `p25`, `p50`, `p75` | same |
+| Population | L8: `has_bot = false`, `n_plies > 0`; **includes `correspondence`**, which the loader drops | `has_bot = false`, `n_plies > 0`, no `correspondence` |
+| Feature precision | L8 stores features as float, then summarised as double | double throughout |
+| Months | those of the `cluster/features.sbatch` run (job 36567: 2026-10) | those of the run (2026-10, 13 Nov 2026) |
+
+The scorer's own population matches both: the replay producer sends no BOT games, no 0-move games and (by default) no correspondence; a correspondence game from another producer finds no baseline cell and gets a null `risk_score`. On the tables of 23 Nov (L10) and 13 Nov (L12), both for 2026-10: the same 170 usable cells (band × time class × feature, `n ≥ 30`) with identical `n`; `p50` differs by at most 0.0022 and the robust scale by at most 0.47% (approximate percentiles over float vs double values). Score comparison on the same 60,000 games (run `29064-nopacing-c1` on L12 vs `37995-nopacing-c1` on L10, `docs/validation_results/scorer_baselines_comparison.csv`): Pearson r = 0.999999 over 115,620 scored player-games, mean |Δ risk_score| 0.00006 (max 0.0037), no change of risk tier (unscored / < 1.0 / ≥ 1.0, the dashboard's `high_risk_threshold`), top-1% overlap 100% per player-game and per game.
