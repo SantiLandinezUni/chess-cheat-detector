@@ -5,7 +5,8 @@
 #   2. no pacing: GAMES games (60000) as fast as possible, through 1, 2 and 4 scorers in one group
 # One CSV row per run (src/streaming/scorer_group.py): throughput, score latency (move sent -> score
 # emitted) and ack latency (-> score acknowledged by the broker).
-# Needs the scorer's baselines (paths.scorer_baselines_dir, e.g. cluster/baselines_provisional.sbatch).
+# Needs the scorer's baselines (paths.scorer_baselines_dir: lake/baselines from cluster/features.sbatch,
+# or lake/baselines_provisional from cluster/baselines_provisional.sbatch).
 # Run it inside a job, from the repo root (or with cluster/scorer_scaling.sbatch):
 #     srun -p interactive --cpus-per-task=16 --mem=32G --time=02:00:00 cluster/scorer_scaling.sh 2026-10 60000
 # The first run of each selection reads the games from the lake with Spark and caches them under
@@ -36,7 +37,7 @@ read -r CACHE BASELINES < <(python -c "
 from src.common.config import load_config
 p = load_config('$CONFIG')['paths']
 print(p['processed_dir'] + '/replay_cache', p['scorer_baselines_dir'])")
-[[ -d "$BASELINES" ]] || { echo "no baselines in $BASELINES: run cluster/baselines_provisional.sbatch first" >&2; exit 1; }
+[[ -d "$BASELINES" ]] || { echo "no baselines in $BASELINES: run cluster/features.sbatch (or baselines_provisional.sbatch) first" >&2; exit 1; }
 
 CHILD=""
 trap 'echo "received TERM/INT"; if [[ -n "$CHILD" ]]; then kill -TERM "$CHILD" 2>/dev/null || true; wait "$CHILD" || true; fi; exit 143' TERM INT
