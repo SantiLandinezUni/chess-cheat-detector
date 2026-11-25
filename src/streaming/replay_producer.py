@@ -32,7 +32,7 @@ from confluent_kafka import KafkaException, Producer
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-from src.common.config import build_arg_parser, load_config
+from src.common.config import build_arg_parser, load_config, parquet_codec
 from src.common.logging_setup import log_duration, setup_logging
 from src.common.spark import get_spark
 from src.streaming.common import MOVE_FIELDS, default_bootstrap, default_topic
@@ -241,7 +241,7 @@ def main() -> None:
             spark.stop()
         if cached is not None and not pdf.empty:
             cached.parent.mkdir(parents=True, exist_ok=True)
-            pdf.to_parquet(cached, index=False)
+            pdf.to_parquet(cached, index=False, compression=parquet_codec(cfg))
             log.info("cached the selected moves in %s", cached)
     if pdf.empty:
         log.error("no moves selected for month %s", args.month)

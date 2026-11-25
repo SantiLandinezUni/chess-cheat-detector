@@ -23,7 +23,7 @@ Part 2 deliverables, deadline and build order are not fixed yet; add them here w
 | Months | Local: `2026-09`, first 2,500,000 lines of the dump = 124,914 games (last one truncated). Cluster: 3 most recent complete months (configurable list). |
 | Time controls | Ingest ALL, store `time_class` column. Analysis starts with blitz + classical via filter. |
 | Formats | PGN = games · JSON = Lichess `/api/users` profile responses · CSV = flattened player label table · SQL-generated = `ref.*` tables + baselines |
-| Storage | Parquet lake (partitioned by `source_month`, `time_class`) + PostgreSQL 16. Raw JSON kept in a JSONB column. No MongoDB. |
+| Storage | Parquet lake (partitioned by `source_month`, `time_class`; zstd, ~128 MB files: `lake.*` in config/*.yaml) + PostgreSQL 16. Raw JSON kept in a JSONB column. No MongoDB. |
 | Labels | `positive` = `tosViolation: true` · `negative` = active, no flag · `unknown` = disabled / closed / not returned (kept, excluded from training). Always store `label_fetched_at`. Label every player in the local sample. |
 | Engine evals | Parse existing `[%eval]` comments into nullable columns. No Stockfish in Part 1. |
 | Privacy | Keyed hash IDs (see Privacy rules). |
@@ -66,12 +66,12 @@ chess-cheat-detector/
 ├── config/
 │   ├── local.yaml          # paths, spark master local[4], driver memory 3g, months, sample size
 │   └── cluster.yaml        # same keys; paths under paths.data_dir, Spark settings "auto" from the Slurm job
-├── cluster/                # Slurm cluster: env.sh, parse*.sbatch, features.sbatch, baselines_provisional.sbatch, baselines_by_month.sbatch, partition_sizes.sbatch, compact_lake.sbatch, kafka_job.sh/.sbatch, consumer_scaling.sh, scorer_scaling.sh/.sbatch, spark_test.py/.sbatch, README.md (setup steps)
+├── cluster/                # Slurm cluster: env.sh, parse*.sbatch, features.sbatch, baselines_provisional.sbatch, baselines_by_month.sbatch, partition_sizes.sbatch, compact_lake.sbatch, compaction_tuning.sbatch, kafka_job.sh/.sbatch, consumer_scaling.sh, scorer_scaling.sh/.sbatch, spark_test.py/.sbatch, README.md (setup steps)
 ├── src/
 │   ├── common/             # config.py, spark.py (session factory), logging_setup.py, ids.py (HMAC), compaction.py (right-sized Parquet files)
 │   ├── ingestion/          # parse_games.py, collect_labels.py, build_labels.py
 │   ├── db/                 # load_postgres.py, load_labels.py
-│   ├── quality/            # checks.py, partition_sizes.py (file count/size per lake partition), compact_lake.py (one-off lake compaction)
+│   ├── quality/            # checks.py, partition_sizes.py (file count/size per lake partition), compact_lake.py (one-off lake compaction), compaction_tuning.py, codec_read_check.py
 │   └── streaming/          # replay_producer.py, count_consumer.py, consumer_group.py, baselines_provisional.py, baselines_by_month.py, scorer.py, scorer_group.py (Kafka, Part 2)
 ├── sql/
 │   ├── schema.sql          # schemas core, ref, restricted + all CREATE TABLE

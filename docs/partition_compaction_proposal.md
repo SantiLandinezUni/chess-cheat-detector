@@ -106,3 +106,17 @@ smaller scale and can use the same function.
 
 Approved on 24 Nov 2026 with a 128 MB target and the copy → verify → swap plan. Home is a 30 TB ZFS
 share with 21 TB free, so the temporary copy fits (no per-user quota tool on rust to check further).
+
+## Results and follow-up (25 Nov 2026)
+
+- First compaction (job 37612, snappy): 25,764 → 1,048 files, rows and checksums equal in all 36
+  partitions, but games + moves grew from 129.5 GB to 155.1 GB (+20%).
+- Tuning on one partition (2026-10 blitz, job 37711,
+  [`validation_results/compaction_tuning.csv`](validation_results/compaction_tuning.csv)): zstd is 27%
+  smaller than snappy at the same write and query speed. Sorting by game start adds only 1.7 points and
+  makes writes ~75% slower; 8 MB dictionary pages give nothing (the IDs are random hashes).
+- Approved: zstd (`lake.parquet_codec`), used by every Spark write (`get_spark`) and the pyarrow writers.
+  The whole lake is re-compacted with the same copy → verify → swap procedure; the three states (before →
+  compacted → compacted + zstd) are in
+  [`validation_results/partition_compaction.csv`](validation_results/partition_compaction.csv).
+
