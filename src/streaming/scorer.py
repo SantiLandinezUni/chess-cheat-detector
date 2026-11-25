@@ -19,6 +19,24 @@ starts N members and records the group's latency and throughput.
 End of a game: the move with is_last = true. Fallbacks: a game with no move for --game-timeout seconds
 (end_reason "idle"), and every game still open when the scorer stops ("shutdown").
 
+Offsets and rebalances (group members; fix for job 32798, where members never committed and a member
+that received the partitions of the others re-read the whole topic from offset 0):
+  - After every processed batch the member commits, per partition, its position (offset after the last
+    processed message), so whoever gets a partition next continues from there and nothing is read twice.
+  - The scorer keeps state (the running statistics of open games), so moving a partition also moves its
+    state. When partitions are taken away (rebalance, or this member leaves early: SIGUSR1 or
+    --leave-after), the member writes a snapshot of every open game of those partitions to topic
+    lichess.scorer_state (same partition number, key = game_id; data dictionary §9), then commits the
+    position with metadata "state:<first>:<end>" = the snapshots' offset range. The next owner reads that
+    range when it gets the partition, restores the games and continues them from the next move: each game
+    gets exactly one final score, identical to the one without a rebalance (the rule is deterministic and
+    the restored floats are exact), and no move is read twice.
+  - SIGTERM / SIGINT (the group stops all members together, or the time limit) stop with "final": open games
+    get their final score ("shutdown"), the positions are committed and the Parquet part is written.
+  - A partition lost without a handoff (session timeout) loses its open games' state; the next owner then
+    sees games from the middle (counted as games_joined_late) and the member exits with an error.
+Partitions are assigned with cooperative-sticky, so a member leaving moves only its own partitions.
+
 Scoring rule (RULE_VERSION; documented in data dictionary §9; workstream D's model can replace it):
   1. Running statistics of the player in this game, with the definitions of L8 (only moves with
      move_time >= 0): move_time_cv, share_moves_under_2s, and move_time_cv_low_clock (low clock =
@@ -55,12 +73,12 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-from confluent_kafka import KafkaException, Producer
+from confluent_kafka import OFFSET_BEGINNING, Consumer, KafkaException, Producer, TopicPartition
 
 from src.common.config import build_arg_parser, load_config, parquet_codec
 from src.common.logging_setup import setup_logging
-from src.streaming.common import TOPIC_SCORES, default_bootstrap, default_topic
-from src.streaming.count_consumer import latency_stats, make_consumer
+from src.streaming.common import TOPIC_SCORER_STATE, TOPIC_SCORES, default_bootstrap, default_topic
+from src.streaming.count_consumer import latency_stats
 
 STEP = "scorer"
 RULE_VERSION = "timing-z-v1"
@@ -107,6 +125,20 @@ FINAL_SCHEMA = pa.schema([
 ])
 
 Baselines = dict[tuple[int, str, str], tuple[float, float]]  # (band_id, time_class, feature) -> (p50, scale)
+CommitPoint = tuple[int, int]  # (partition, position = offset after the last processed message)
+STATE_PREFIX = "state:"        # commit metadata of a handoff: "state:<first offset>:<end offset>" in lichess.scorer_state
+
+
+def state_metadata(first: int, end: int) -> str:
+    return f"{STATE_PREFIX}{first}:{end}"
+
+
+def parse_state_metadata(metadata: str | None) -> tuple[int, int] | None:
+    """(first, end) offsets of the handoff snapshots in lichess.scorer_state, or None."""
+    if not metadata or not metadata.startswith(STATE_PREFIX):
+        return None
+    first, end = metadata[len(STATE_PREFIX):].split(":")
+    return int(first), int(end)
 
 
 def band_of(elo: int | None) -> int | None:
@@ -159,6 +191,15 @@ class Running:
             return None
         return math.sqrt(max(self.m2, 0.0) / (self.n - 1)) / self.mean
 
+    def state(self) -> list:
+        return [self.n, self.mean, self.m2]
+
+    @classmethod
+    def from_state(cls, st: list) -> "Running":
+        r = cls()
+        r.n, r.mean, r.m2 = int(st[0]), float(st[1]), float(st[2])
+        return r
+
 
 class PlayerState:
     """Running statistics of one player in one game."""
@@ -194,12 +235,25 @@ class PlayerState:
             "move_time_cv_low_clock": self.mt_low.cv(),
         }
 
+    def state(self) -> dict[str, Any]:
+        """Snapshot for a handoff (JSON; floats round-trip exactly)."""
+        return {"player_id": self.player_id, "color": self.color, "elo": self.elo, "n_moves": self.n_moves,
+                "n_fast": self.n_fast, "n_clock": self.n_clock, "n_low": self.n_low,
+                "mt": self.mt.state(), "mt_low": self.mt_low.state()}
+
+    @classmethod
+    def from_state(cls, st: dict[str, Any]) -> "PlayerState":
+        p = cls(st["player_id"], st["color"], st["elo"])
+        p.n_moves, p.n_fast, p.n_clock, p.n_low = st["n_moves"], st["n_fast"], st["n_clock"], st["n_low"]
+        p.mt, p.mt_low = Running.from_state(st["mt"]), Running.from_state(st["mt_low"])
+        return p
+
 
 class GameState:
-    __slots__ = ("time_class", "players", "last_ply", "last_ts", "last_seen")
+    __slots__ = ("time_class", "partition", "players", "last_ply", "last_ts", "last_seen")
 
-    def __init__(self, time_class: str) -> None:
-        self.time_class = time_class
+    def __init__(self, time_class: str, partition: int) -> None:
+        self.time_class, self.partition = time_class, partition
         self.players: dict[str, PlayerState] = {}
         self.last_ply = 0
         self.last_ts = 0
@@ -232,7 +286,11 @@ def _r(v: Any) -> Any:
 
 
 class Scorer:
-    """Game states, score emission and the final rows. One instance per consumer process."""
+    """Game states, score emission, the final rows and the commit points. One instance per consumer process.
+
+    Kafka-free (apart from the score producer), so the handoff can be tested without a broker: the consumer
+    callbacks call assign() / release(), the poll loop calls on_move() and due_commits().
+    """
 
     def __init__(self, baselines: Baselines, baselines_name: str, emit_every: int,
                  producer: Producer, scores_topic: str) -> None:
@@ -244,17 +302,54 @@ class Scorer:
         self.latency_ms: list[int] = []       # emit time - triggering move's timestamp
         self.ack_latency_ms: list[int] = []   # broker ack of the score - triggering move's timestamp
         self.counts: Counter = Counter()
+        self.owned: set[int] = set()          # partitions assigned to this member
+        self.pos: dict[int, int] = {}         # partition -> offset after the last processed message
+        self.open_by_part: dict[int, set[str]] = {}  # partition -> its open games
+        self.committed: dict[int, int] = {}   # partition -> position last sent in a commit
+        self.dirty: set[int] = set()          # partitions whose position changed since the last commit
 
-    def on_move(self, v: dict[str, Any], now: float) -> None:
-        """Update the game with one lichess.moves value; emit scores when due."""
+    def assign(self, partition: int, start: int | None = None, snapshots: list[dict[str, Any]] | None = None,
+               now: float = 0.0) -> None:
+        """Start owning a partition: start = committed position (None if nothing committed yet),
+        snapshots = the open games the previous owner handed over (restored as they were)."""
+        self.owned.add(partition)
+        self.dirty.discard(partition)
+        if start is None:
+            self.pos.pop(partition, None)
+            self.committed.pop(partition, None)
+        else:
+            self.pos[partition] = self.committed[partition] = start
+        for st in snapshots or []:
+            gid = st["game_id"]
+            if gid in self.games:
+                self.counts["snapshot_conflicts"] += 1
+                continue
+            g = self.games[gid] = GameState(st["time_class"], partition)
+            g.last_ply, g.last_ts, g.last_seen = st["last_ply"], st["last_ts"], now
+            g.players = {ps["color"]: PlayerState.from_state(ps) for ps in st["players"]}
+            self.open_by_part.setdefault(partition, set()).add(gid)
+            self.counts["games_restored"] += 1
+
+    def snapshot(self, gid: str) -> dict[str, Any]:
+        g = self.games[gid]
+        return {"game_id": gid, "time_class": g.time_class, "last_ply": g.last_ply, "last_ts": g.last_ts,
+                "players": [p.state() for p in g.players.values()]}
+
+    def on_move(self, v: dict[str, Any], partition: int, offset: int, now: float) -> None:
+        """Update the game with one lichess.moves value (at partition/offset); emit scores when due."""
+        self.pos[partition] = offset + 1
+        self.dirty.add(partition)
         gid = v["game_id"]
         if gid in self.finished:
             self.counts["late_messages"] += 1
             return
         g = self.games.get(gid)
         if g is None:
-            g = self.games[gid] = GameState(v["time_class"])
+            g = self.games[gid] = GameState(v["time_class"], partition)
+            self.open_by_part.setdefault(partition, set()).add(gid)
             self.counts["games"] += 1
+            if v["ply"] > 1:  # first seen mid-game: its earlier moves were never scored here (no snapshot)
+                self.counts["games_joined_late"] += 1
         ply = v["ply"]
         if ply <= g.last_ply:  # redelivered or out of order: already counted
             self.counts["duplicates"] += 1
@@ -309,6 +404,7 @@ class Scorer:
     def finish(self, gid: str, reason: str, from_move: bool = False) -> None:
         """Final score of both players: score message + Parquet row; forget the game."""
         g = self.games.pop(gid)
+        self.open_by_part[g.partition].discard(gid)
         self.finished[gid] = time.monotonic()
         scored_at = datetime.now(timezone.utc)
         for p in g.players.values():
@@ -320,7 +416,6 @@ class Scorer:
                 "end_reason": reason, "rule_version": RULE_VERSION, "baselines": self.baselines_name,
                 "scored_at": scored_at,
             })
-        self.counts[f"final_{reason}"] += 1
 
     def sweep(self, now: float, game_timeout: float) -> None:
         """Close games idle for game_timeout seconds; forget old finished ids."""
@@ -333,6 +428,49 @@ class Scorer:
         for gid in list(self.games):
             self.finish(gid, reason)
 
+    def due_commits(self) -> list[CommitPoint]:
+        """Positions that changed since the last commit (called after every batch)."""
+        out = []
+        for p in self.dirty:
+            if p in self.pos and self.committed.get(p) != self.pos[p]:
+                self.committed[p] = self.pos[p]
+                out.append((p, self.pos[p]))
+        self.dirty.clear()
+        return out
+
+    def commit_failed(self, partition: int) -> None:
+        """An async commit failed: send this partition's position again with the next batch."""
+        self.committed.pop(partition, None)
+        self.dirty.add(partition)
+
+    def release(self, partitions: list[int], lost: bool = False
+                ) -> tuple[list[CommitPoint], dict[int, list[dict[str, Any]]]]:
+        """Hand partitions over to their next owner: returns the positions to commit and, per partition,
+        the snapshots of its open games (which this member then forgets, without a final score).
+        lost=True: no commit and no snapshot (the state of those games is lost)."""
+        points: list[CommitPoint] = []
+        snaps: dict[int, list[dict[str, Any]]] = {}
+        for p in partitions:
+            gids = sorted(self.open_by_part.pop(p, set()))
+            if not lost:
+                snaps[p] = [self.snapshot(gid) for gid in gids]
+                if p in self.pos:
+                    points.append((p, self.pos[p]))
+            for gid in gids:
+                del self.games[gid]
+            self.counts["lost_open_games" if lost else "handed_over_open_games"] += len(gids)
+            self.owned.discard(p)
+            self.dirty.discard(p)
+            self.pos.pop(p, None)
+            self.committed.pop(p, None)
+        return points, snaps
+
+    def final_games(self) -> dict[str, int]:
+        """Games with a final score, by end_reason."""
+        reasons = {r["game_id"]: r["end_reason"] for r in self.final_rows}
+        c = Counter(reasons.values())
+        return {r: c[r] for r in ("last_move", "idle", "shutdown")}
+
 
 def write_final(rows: list[dict[str, Any]], out_dir: Path, name: str, codec: str = "zstd") -> Path | None:
     """Final scores of this member to <out_dir>/part-<name>.parquet (overwrites a rerun's file)."""
@@ -344,17 +482,196 @@ def write_final(rows: list[dict[str, Any]], out_dir: Path, name: str, codec: str
     return path
 
 
-def run(consumer: Any, scorer: Scorer, producer: Producer, idle_timeout: float, first_timeout: float,
-        game_timeout: float, interval: float) -> dict[str, Any]:
-    """Poll until idle or stopped; return the run summary."""
-    stop = {"flag": False}
+def to_commit(topic: str, points: list[CommitPoint], metadata: dict[int, str] | None = None) -> list[TopicPartition]:
+    """Commit positions as TopicPartitions (metadata: handoff snapshot range per partition)."""
+    md = metadata or {}
+    return [TopicPartition(topic, p, position, metadata=md.get(p, "")) for p, position in points]
 
-    def on_term(signum: int, _frame: Any) -> None:
-        log.info("received signal %d: stopping", signum)
-        stop["flag"] = True
 
-    signal.signal(signal.SIGTERM, on_term)
-    signal.signal(signal.SIGINT, on_term)
+def commit_now(consumer: Consumer, topic: str, scorer: Scorer, points: list[CommitPoint],
+               metadata: dict[int, str] | None = None) -> bool:
+    """Synchronous commit (handoff and shutdown); an error is logged and counted, never raised."""
+    if not points:
+        return True
+    try:
+        consumer.commit(offsets=to_commit(topic, points, metadata), asynchronous=False)
+        scorer.counts["commits"] += 1
+        return True
+    except KafkaException as exc:
+        scorer.counts["commit_errors"] += 1
+        log.error("commit of %s failed: %s", points, exc)
+        return False
+
+
+def hand_over(consumer: Consumer, producer: Producer, scorer: Scorer, topic: str, state_topic: str,
+              partitions: list[int]) -> None:
+    """Release partitions: snapshots of their open games to state_topic (same partition number), wait until
+    the broker has them, then commit the positions with the snapshots' offset range as metadata."""
+    points, snaps = scorer.release(partitions)
+    sent: dict[int, list[int]] = {}
+    failed = []
+
+    def on_delivery(err: Any, msg: Any) -> None:
+        if err is not None:
+            failed.append(err)
+        else:
+            sent.setdefault(msg.partition(), []).append(msg.offset())
+
+    n = 0
+    for p, games in snaps.items():
+        for st in games:
+            payload = json.dumps(st, separators=(",", ":")).encode()
+            while True:
+                try:
+                    producer.produce(state_topic, key=st["game_id"].encode(), value=payload, partition=p,
+                                     on_delivery=on_delivery)
+                    break
+                except BufferError:
+                    producer.poll(0.05)
+            n += 1
+    remaining = producer.flush(60)  # snapshots and the scores already emitted for these games
+    if failed or remaining:
+        scorer.counts["snapshot_errors"] += len(failed) + remaining
+        log.error("%d snapshots not delivered (%s): the next owner will miss those games' earlier moves",
+                  len(failed) + remaining, failed[:3])
+    metadata = {p: state_metadata(min(o), max(o) + 1) for p, o in sent.items()}
+    ok = commit_now(consumer, topic, scorer, points, metadata)
+    scorer.counts["snapshots_sent"] += n
+    if n:
+        log.info("handed over partitions %s: %d open games -> %s %s, commit %s%s", sorted(partitions), n,
+                 state_topic, metadata, points, "" if ok else " FAILED")
+    else:
+        log.info("released partitions %s (no open game), commit %s%s", sorted(partitions), points,
+                 "" if ok else " FAILED")
+
+
+def read_snapshots(bootstrap: str, state_topic: str, partition: int, first: int, end: int) -> list[dict[str, Any]]:
+    """The snapshots a previous owner wrote to state_topic[partition] at offsets [first, end)."""
+    c = Consumer({"bootstrap.servers": bootstrap, "group.id": f"{STEP}-state-{time.time_ns()}",
+                  "enable.auto.commit": False})
+    out: list[dict[str, Any]] = []
+    try:
+        c.assign([TopicPartition(state_topic, partition, first)])
+        deadline = time.monotonic() + 60
+        while len(out) < end - first and time.monotonic() < deadline:
+            m = c.poll(1.0)
+            if m is None:
+                continue
+            if m.error():
+                raise KafkaException(m.error())
+            if first <= m.offset() < end:
+                out.append(json.loads(m.value()))
+            if m.offset() >= end - 1:
+                break
+    finally:
+        c.close()
+    if len(out) != end - first:
+        raise KafkaException(f"read {len(out)} of {end - first} snapshots of {state_topic}[{partition}]")
+    return out
+
+
+def make_scorer_consumer(bootstrap: str, topic: str, state_topic: str, group: str | None,
+                         ready_file: str | None, client_id: str, scorer: Scorer, producer: Producer) -> Consumer:
+    """Consumer of lichess.moves wired to the scorer's offsets and handoff.
+
+    With a group: subscribed with cooperative-sticky assignment (a member leaving moves only its own
+    partitions). On assignment it reads the committed positions and restores the snapshots named in their
+    metadata; on revocation it hands the partitions over (hand_over). Without a group: every partition from
+    the first offset, no commits. The ready file is touched once the consumer has partitions."""
+    def on_commit(err: Any, partitions: list[TopicPartition]) -> None:
+        if err is not None:
+            scorer.counts["commit_errors"] += 1
+            log.warning("async commit failed (%s): sent again with the next batch", err)
+            for tp in partitions:
+                scorer.commit_failed(tp.partition)
+
+    consumer = Consumer({
+        "bootstrap.servers": bootstrap,
+        "group.id": group or f"{STEP}-{time.time_ns()}",
+        "enable.auto.commit": False,  # the scorer commits its positions itself, after every batch
+        "auto.offset.reset": "earliest",
+        "partition.assignment.strategy": "cooperative-sticky",
+        "client.id": client_id,
+        "on_commit": on_commit,
+    })
+    meta = consumer.list_topics(topic, timeout=30)
+    if topic not in meta.topics or meta.topics[topic].error is not None:
+        raise KafkaException(f"topic {topic} not found")
+
+    def mark_ready() -> None:
+        if ready_file and scorer.owned:
+            Path(ready_file).touch()
+
+    if not group:
+        partitions = sorted(meta.topics[topic].partitions)
+        for p in partitions:
+            scorer.assign(p)
+        consumer.assign([TopicPartition(topic, p, OFFSET_BEGINNING) for p in partitions])
+        log.info("assigned %d partitions of %s", len(partitions), topic)
+        mark_ready()
+        return consumer
+
+    def on_assign(c: Consumer, parts: list[TopicPartition]) -> None:
+        if not parts:
+            return
+        try:
+            committed = c.committed(parts, timeout=30)
+        except KafkaException as exc:
+            scorer.counts["assign_errors"] += 1
+            log.error("could not read the committed offsets of %s: %s", [p.partition for p in parts], exc)
+            committed = [TopicPartition(topic, p.partition) for p in parts]
+        info = {}
+        for tp in committed:
+            start = tp.offset if tp.offset >= 0 else None
+            snaps: list[dict[str, Any]] = []
+            rng = parse_state_metadata(tp.metadata)
+            if rng:
+                try:
+                    snaps = read_snapshots(bootstrap, state_topic, tp.partition, *rng)
+                except KafkaException as exc:  # those games then continue from the middle (games_joined_late)
+                    scorer.counts["assign_errors"] += 1
+                    log.error("could not restore the snapshots of partition %d: %s", tp.partition, exc)
+            scorer.assign(tp.partition, start, snaps, time.monotonic())
+            if start is not None:
+                info[tp.partition] = f"from {start}, {len(snaps)} games restored"
+        log.info("group %s: assigned partitions %s (%s)", group, sorted(tp.partition for tp in committed),
+                 info or "no committed offsets: from the beginning")
+        mark_ready()
+
+    def on_revoke(c: Consumer, parts: list[TopicPartition]) -> None:
+        mine = [p.partition for p in parts if p.partition in scorer.owned]
+        if mine:
+            hand_over(c, producer, scorer, topic, state_topic, mine)
+
+    def on_lost(_c: Consumer, parts: list[TopicPartition]) -> None:
+        mine = [p.partition for p in parts if p.partition in scorer.owned]
+        scorer.release(mine, lost=True)
+        scorer.counts["lost_partitions"] += len(mine)
+        log.error("group %s: lost partitions %s without a handoff: the state of their open games is lost",
+                  group, sorted(mine))
+
+    consumer.subscribe([topic], on_assign=on_assign, on_revoke=on_revoke, on_lost=on_lost)
+    log.info("subscribed to %s as a member of group %s (cooperative-sticky)", topic, group)
+    return consumer
+
+
+def run(consumer: Consumer, scorer: Scorer, producer: Producer, topic: str, state_topic: str,
+        use_commits: bool, idle_timeout: float, first_timeout: float, game_timeout: float, interval: float,
+        leave_after: int | None) -> dict[str, Any]:
+    """Poll and score, committing after every batch, until stopped; then shut down (no consumer close).
+
+    Stop "final" (SIGTERM/SIGINT, idle or first-message timeout): open games get a final "shutdown" score
+    and the positions are committed. Stop "handoff" (SIGUSR1 or --leave-after messages): the partitions are
+    handed over to the rest of the group (hand_over). Timeouts of 0 are disabled."""
+    stop: dict[str, str | None] = {"mode": None}
+
+    def on_signal(signum: int, _frame: Any) -> None:
+        mode = "handoff" if signum == signal.SIGUSR1 else "final"
+        log.info("received signal %d: stopping (%s)", signum, mode)
+        stop["mode"] = stop["mode"] or mode
+
+    for s in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1):
+        signal.signal(s, on_signal)
 
     total = bad = errors = 0
     t_start = time.monotonic()
@@ -362,7 +679,7 @@ def run(consumer: Any, scorer: Scorer, producer: Producer, idle_timeout: float, 
     first_ms = last_ms = None
     next_sweep = t_start + SWEEP_EVERY_S
     next_report = t_start + interval
-    while not stop["flag"]:
+    while stop["mode"] is None:
         first = consumer.poll(0.2)
         msgs = [first] + consumer.consume(num_messages=BATCH, timeout=0) if first is not None else []
         now = time.monotonic()
@@ -371,9 +688,12 @@ def run(consumer: Any, scorer: Scorer, producer: Producer, idle_timeout: float, 
                 errors += 1
                 log.error("consumer error: %s", m.error())
                 continue
+            if m.partition() not in scorer.owned:  # fetched before a revocation: the next owner reads it
+                scorer.counts["not_owned_skipped"] += 1
+                continue
             total += 1
             try:
-                scorer.on_move(json.loads(m.value()), now)
+                scorer.on_move(json.loads(m.value()), m.partition(), m.offset(), now)
             except (ValueError, KeyError, TypeError) as exc:
                 bad += 1
                 if bad <= 5:
@@ -387,31 +707,50 @@ def run(consumer: Any, scorer: Scorer, producer: Producer, idle_timeout: float, 
         if now >= next_sweep:
             scorer.sweep(now, game_timeout)
             next_sweep = now + SWEEP_EVERY_S
+        if use_commits:
+            points = scorer.due_commits()
+            if points:
+                consumer.commit(offsets=to_commit(topic, points), asynchronous=True)
         if now >= next_report:
-            log.info("t=%6.1fs moves=%d open_games=%d scores=%d finals=%d",
+            log.info("t=%6.1fs moves=%d open_games=%d scores=%d finals=%d partitions=%s",
                      now - t_start, total, len(scorer.games), scorer.counts["scores_emitted"],
-                     len(scorer.final_rows))
+                     len(scorer.final_rows), sorted(scorer.owned))
             next_report = now + interval
-        if t_last is not None and now - t_last >= idle_timeout:
+        if leave_after and total >= leave_after:
+            log.info("processed %d messages (--leave-after %d): leaving the group", total, leave_after)
+            stop["mode"] = "handoff"
+        elif idle_timeout > 0 and t_last is not None and now - t_last >= idle_timeout:
             log.info("no messages for %.0f s: stopping", idle_timeout)
             break
-        if t_first is None and now - t_start >= first_timeout:
+        elif first_timeout > 0 and t_first is None and now - t_start >= first_timeout:
             log.error("no message within %.0f s", first_timeout)
             break
 
-    scorer.finish_all("shutdown")
+    mode = stop["mode"] or "final"
+    if mode == "handoff" and use_commits:
+        hand_over(consumer, producer, scorer, topic, state_topic, sorted(scorer.owned))
+    else:
+        mode = "final"
+        scorer.finish_all("shutdown")
+        if use_commits:  # every position, also those an async commit may still be sending
+            commit_now(consumer, topic, scorer, [(q, scorer.pos[q]) for q in sorted(scorer.owned) if q in scorer.pos])
     remaining = producer.flush(60)
     active_s = (t_last - t_first) if t_first is not None and t_last > t_first else None
     c = scorer.counts
     return {"messages": total, "errors": errors, "bad_values": bad, "duplicates": c["duplicates"],
-            "late_messages": c["late_messages"], "games": c["games"],
+            "late_messages": c["late_messages"], "games": c["games"], "stop_mode": mode,
             "active_s": round(active_s, 3) if active_s else None,
             "msg_s": round(total / active_s, 1) if active_s else None,
             "first_msg_ms": first_ms, "last_msg_ms": last_ms,
             "scores_emitted": c["scores_emitted"], "scores_delivered": c["scores_delivered"],
             "scores_failed": c["scores_failed"], "scores_undelivered": remaining,
-            "final_scores": len(scorer.final_rows),
-            "final_games": {r: c[f"final_{r}"] for r in ("last_move", "idle", "shutdown")},
+            "final_scores": len(scorer.final_rows), "final_games": scorer.final_games(),
+            "handed_over_open_games": c["handed_over_open_games"], "snapshots_sent": c["snapshots_sent"],
+            "games_restored": c["games_restored"], "games_joined_late": c["games_joined_late"],
+            "not_owned_skipped": c["not_owned_skipped"], "commits": c["commits"],
+            "commit_errors": c["commit_errors"], "assign_errors": c["assign_errors"],
+            "snapshot_errors": c["snapshot_errors"], "snapshot_conflicts": c["snapshot_conflicts"],
+            "lost_partitions": c["lost_partitions"], "lost_open_games": c["lost_open_games"],
             "score_latency": latency_stats(np.asarray(scorer.latency_ms, dtype=np.int64)),
             "ack_latency": latency_stats(np.asarray(scorer.ack_latency_ms, dtype=np.int64))}
 
@@ -421,6 +760,8 @@ def main() -> None:
     parser.add_argument("--bootstrap", default=default_bootstrap(), help="Kafka bootstrap servers (default: $KAFKA_BOOTSTRAP)")
     parser.add_argument("--topic", default=default_topic(), help="input topic (default: $KAFKA_TOPIC or lichess.moves)")
     parser.add_argument("--scores-topic", default=TOPIC_SCORES, help=f"output topic (default {TOPIC_SCORES})")
+    parser.add_argument("--state-topic", default=TOPIC_SCORER_STATE,
+                        help=f"handoff snapshots of open games, group mode (default {TOPIC_SCORER_STATE})")
     parser.add_argument("--baselines", help="baselines folder (default: paths.scorer_baselines_dir of the config)")
     parser.add_argument("--emit-every", type=int, default=DEFAULT_EMIT_EVERY,
                         help=f"send a score every N moves of a player (default {DEFAULT_EMIT_EVERY})")
@@ -430,11 +771,14 @@ def main() -> None:
     parser.add_argument("--name", default="0", help="member name: log file and Parquet part names (default 0)")
     parser.add_argument("--interval", type=float, default=10.0, help="seconds between progress lines (default 10)")
     parser.add_argument("--idle-timeout", type=float, default=30.0,
-                        help="stop after this many seconds without messages (default 30)")
+                        help="stop after this many seconds without messages; 0 = never, the group stops it "
+                             "(default 30)")
     parser.add_argument("--first-timeout", type=float, default=900.0,
-                        help="give up if no message arrives within this many seconds (default 900)")
+                        help="give up if no message arrives within this many seconds; 0 = never (default 900)")
     parser.add_argument("--game-timeout", type=float, default=600.0,
                         help="close a game with no move for this many seconds (default 600)")
+    parser.add_argument("--leave-after", type=int,
+                        help="rebalance test: leave the group (hand the partitions over) after N messages")
     parser.add_argument("--summary-out", help="write the run summary to this JSON file")
     parser.add_argument("--latency-out", help="save score and ack latencies (ms) to this .npz file")
     parser.add_argument("--ready-file", help="touch once partitions are assigned (default: $KAFKA_CONSUMER_READY)")
@@ -443,6 +787,8 @@ def main() -> None:
         parser.error("no broker: pass --bootstrap or run inside cluster/kafka_job.sh (sets KAFKA_BOOTSTRAP)")
     if args.emit_every <= 0:
         parser.error("--emit-every must be > 0")
+    if args.leave_after is not None and (args.leave_after <= 0 or not args.group):
+        parser.error("--leave-after needs --group and a value > 0")
 
     cfg = load_config(args.config)
     setup_logging(f"{STEP}-{args.name}", cfg["paths"]["log_dir"])
@@ -459,35 +805,39 @@ def main() -> None:
     producer = Producer({"bootstrap.servers": args.bootstrap, "client.id": f"{STEP}-{args.name}",
                          "enable.idempotence": True, "acks": "all", "linger.ms": 5,
                          "compression.type": "lz4", "partitioner": "murmur2_random"})
-    try:
-        meta = producer.list_topics(args.scores_topic, timeout=30)
-        if meta.topics[args.scores_topic].error is not None:
-            raise KafkaException(meta.topics[args.scores_topic].error)
-    except KafkaException as exc:
-        log.error("output topic %s not available at %s: %s", args.scores_topic, args.bootstrap, exc)
-        sys.exit(1)
+    for t in [args.scores_topic] + ([args.state_topic] if args.group else []):
+        try:
+            meta = producer.list_topics(t, timeout=30)
+            if meta.topics[t].error is not None:
+                raise KafkaException(meta.topics[t].error)
+        except KafkaException as exc:
+            log.error("topic %s not available at %s: %s", t, args.bootstrap, exc)
+            sys.exit(1)
     scorer = Scorer(baselines, Path(baselines_dir).name, args.emit_every, producer, args.scores_topic)
 
-    consumer = make_consumer(args.bootstrap, args.topic, args.group,
-                             args.ready_file or os.getenv("KAFKA_CONSUMER_READY"), client_id=f"{STEP}-{args.name}")
+    consumer = make_scorer_consumer(args.bootstrap, args.topic, args.state_topic, args.group,
+                                    args.ready_file or os.getenv("KAFKA_CONSUMER_READY"),
+                                    f"{STEP}-{args.name}", scorer, producer)
     try:
-        summary = run(consumer, scorer, producer, args.idle_timeout, args.first_timeout,
-                      args.game_timeout, args.interval)
+        summary = run(consumer, scorer, producer, args.topic, args.state_topic, bool(args.group),
+                      args.idle_timeout, args.first_timeout, args.game_timeout, args.interval, args.leave_after)
     finally:
-        consumer.close()
+        consumer.close()  # leaves the group; any revocation here finds nothing left to hand over
 
     path = write_final(scorer.final_rows, out_dir, args.name, parquet_codec(cfg))
     log.info("final scores: %d rows -> %s", len(scorer.final_rows), path)
     if args.latency_out:
         np.savez(args.latency_out, score=np.asarray(scorer.latency_ms, dtype=np.int64),
                  ack=np.asarray(scorer.ack_latency_ms, dtype=np.int64))
-    summary.update(baselines=baselines_dir, emit_every=args.emit_every, run_id=args.run_id, final_path=str(path))
+    summary.update(baselines=baselines_dir, emit_every=args.emit_every, run_id=args.run_id, final_path=str(path),
+                   final_scores=len(scorer.final_rows), final_games=scorer.final_games())
     log.info("summary: %s", json.dumps(summary))
     if args.summary_out:
         Path(args.summary_out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.summary_out).write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    if (summary["messages"] == 0 or summary["errors"] or summary["bad_values"]
-            or summary["scores_failed"] or summary["scores_undelivered"]):
+    if (summary["messages"] == 0 or summary["errors"] or summary["bad_values"] or summary["scores_failed"]
+            or summary["scores_undelivered"] or summary["assign_errors"] or summary["lost_partitions"]
+            or summary["snapshot_errors"] or summary["snapshot_conflicts"]):
         sys.exit(1)
 
 

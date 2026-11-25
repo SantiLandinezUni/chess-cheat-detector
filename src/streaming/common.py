@@ -8,6 +8,7 @@ import os
 
 TOPIC_MOVES = "lichess.moves"
 TOPIC_SCORES = "lichess.scores"
+TOPIC_SCORER_STATE = "lichess.scorer_state"  # handoff snapshots of open games (scorer group)
 
 # Value of a lichess.moves message (JSON, UTF-8); key = game_id. See docs/data_dictionary.md §8.
 # `timestamp` must stay last: the replay producer appends it to a pre-encoded prefix at send time.

@@ -1,0 +1,3 @@
+case,job_id,speed,consumers,leave_one_after,games_sent,games_scored_ref,games_scored_test,rows_ref,rows_test,duplicate_rows_test,rows_only_ref,rows_only_test,rows_different,identical,messages_in_topic,messages_consumed_test,reread_messages,handed_over_open_games,games_restored,games_joined_late,status_ref,status_test,passed
+speed100-c2,38021,100.0,2,15000,1000,1000,1000,1996,1996,0,0,0,0,True,68054,68054,0,445,445,0,complete,complete,True
+nopacing-c4,38021,0.0,4,400000,60000,60000,60000,119886,119886,0,0,0,0,True,3986438,3986438,0,1,1,0,complete,complete,True

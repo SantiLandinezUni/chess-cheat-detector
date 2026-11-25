@@ -1,6 +1,6 @@
 # Data Dictionary — Chess Cheat Detector (Part 1)
 
-Version 1.3 · Last updated 25 Nov 2026 (Part 2: the streaming scorer reads L10; §9 baseline mapping L10 ↔ L12)
+Version 1.4 · Last updated 25 Nov 2026 (Part 2: scorer group commits offsets and stops on lag 0, exactly one final score per game in L13; §9 offsets)
 
 This file is the single source of truth for every dataset in the project. Code must match it; when code changes a column, update this file in the same commit.
 
@@ -242,7 +242,7 @@ Stand-in for L10 until workstream B's table existed; the streaming scorer's base
 
 ### L13 — `scores/live_game` (Part 2, `src/streaming/scorer.py`)
 
-Final per-game scores of the streaming scorer, for the dashboard. Partitioned by `run_id` (folder `run_id=<id>`; `scorer_group.py` clears it before a run, so rerunning an id replaces it). One file per scorer process (`part-<name>.parquet`, written with pyarrow when it stops). Grain: one row per (`run_id`, `game_id`, `player_id`). Only hashed `player_id`. Scoring rule in §9.
+Final per-game scores of the streaming scorer, for the dashboard. Partitioned by `run_id` (folder `run_id=<id>`; `scorer_group.py` clears it before a run, so rerunning an id replaces it). One file per scorer process (`part-<name>.parquet`, written with pyarrow when it stops). Grain: one row per (`run_id`, `game_id`, `player_id`): each game has exactly one final score per player in a run, also across a consumer-group rebalance (offsets in §9); `scorer_group.py` checks it after every run. Only hashed `player_id`. Scoring rule in §9.
 
 | Column | Type | NN | Description |
 |---|---|---|---|
@@ -522,6 +522,14 @@ Written by `src/streaming/scorer.py`. One message per player each time the playe
 | `rule_version` | string | no | `timing-z-v1` |
 | `move_timestamp` | integer | no | `timestamp` of the last move message of the game the scorer had seen (the move that triggered the score, for periodic and `last_move` scores) |
 | `timestamp` | integer | no | emit time, UTC epoch ms. Scoring latency = `timestamp − move_timestamp` |
+
+### Consumer offsets of the scorer group (since 25 Nov 2026, fix for job 32798)
+
+Scorers in a consumer group (`scorer_group.py`, cooperative-sticky assignment) commit their offsets on `lichess.moves` after every processed batch: the committed offset is the position after the last processed message. When a partition moves to another member (rebalance, or a member leaving), the old owner writes a snapshot of each open game of that partition to K3 `lichess.scorer_state`, then commits its position with metadata `state:<first>:<end>` (the snapshots' offset range in K3, same partition number). The new owner restores those games and continues at the committed position: no move is read twice, and each game gets exactly one final score, identical to a run without the rebalance. The group's lag = Σ partitions (end offset − committed offset); the group stops all members together only when the producer has finished and the lag is 0.
+
+### K3 — `lichess.scorer_state`
+
+Written and read only by `src/streaming/scorer.py` during a handoff. Same partition count as `lichess.moves`; a snapshot goes to the partition number of the game's `lichess.moves` partition. **Key** = `game_id`. **Value** = JSON: `game_id`, `time_class`, `last_ply`, `last_ts` (timestamp of the last move seen), and `players`, a list of per-player running state: `player_id` (hashed), `color`, `elo`, `n_moves`, `n_fast`, `n_clock`, `n_low`, `mt` and `mt_low` (`[n, mean, m2]` of the Welford running move-time statistics, all moves / low-clock moves). Only hashed ids. Kept only for the job's broker lifetime (deleted with it).
 
 ### Scoring rule `timing-z-v1` (provisional; workstream D's model can replace it)
 

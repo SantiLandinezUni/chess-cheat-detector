@@ -18,13 +18,22 @@
 #   KAFKA_WORK_DIR        this run's scratch folder, for temporary files (deleted at the end)
 #   KAFKA_CONSUMER_READY  file the consumer touches once it is assigned; the producer starts after it
 #                         appears (count_consumer.py does this), or after READY_TIMEOUT_S seconds
+#   KAFKA_PRODUCER_DONE   file touched when the producer has exited (or was stopped); scorer_group.py
+#                         stops its scorers only after it appears and the group's lag is 0
 # Optional variables: TOPIC (lichess.moves), EXTRA_TOPICS (space-separated topics also created with
 #   PARTITIONS partitions, e.g. "lichess.scores" for src/streaming/scorer.py), PARTITIONS (8), KAFKA_HEAP (1G), READY_TIMEOUT_S (60),
-#   CONSUMER_WAIT_S (900: how long to wait for the consumer after the producer ends before killing it),
+#   CONSUMER_WAIT_S (0 = no limit: seconds to wait for the consumer after the producer ends, then stop it
+#     gracefully and fail), STOP_RESERVE_S (300), CONSUMER_STOP_GRACE_S (150),
 #   RUN_TAG (added to the broker log name, for several runs in one job).
+# Shutdown order (fix for job 32798): producer, then the consumer's whole process group (SIGTERM, then
+# up to CONSUMER_STOP_GRACE_S for every process of the group, e.g. each scorer, to write its output and
+# exit), and only then the broker. Time limit: STOP_RESERVE_S seconds before the job's end time, the run
+# is stopped this way, the consumer reports how much it processed, and the exit status is 124
+# (TIME_LIMIT_EXIT). The trap does the same on SIGTERM (e.g. sbatch --signal=B:TERM@...).
 # Broker data and logs live in node-local /scratch/$USER/$SLURM_JOB_ID/kafka; the broker log is
 # copied to logs/kafka-broker-<job id>[-<RUN_TAG>].log, then the folder is deleted on any exit (trap), also on
-# failure, scancel or the time limit. Exit status: non-zero if the producer or consumer failed.
+# failure, scancel or the time limit. Exit status: non-zero if the producer or consumer failed, 124 if the
+# run was stopped at the time limit.
 
 set -euo pipefail
 : "${SLURM_JOB_ID:?run inside a Slurm job (srun or sbatch), never on the login node}"
@@ -41,7 +50,10 @@ export KAFKA_TOPIC="${TOPIC:-lichess.moves}"
 export KAFKA_PARTITIONS="${PARTITIONS:-8}"
 PARTITIONS="$KAFKA_PARTITIONS"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-60}"
-CONSUMER_WAIT_S="${CONSUMER_WAIT_S:-900}"
+CONSUMER_WAIT_S="${CONSUMER_WAIT_S:-0}"
+STOP_RESERVE_S="${STOP_RESERVE_S:-300}"
+CONSUMER_STOP_GRACE_S="${CONSUMER_STOP_GRACE_S:-150}"
+TIME_LIMIT_EXIT=124
 JOB_SCRATCH="/scratch/$USER/$SLURM_JOB_ID"
 WORK="$JOB_SCRATCH/kafka"
 export KAFKA_WORK_DIR="$WORK"
@@ -50,23 +62,37 @@ BROKER_PID="" CONSUMER_PID="" PRODUCER_PID=""
 
 [[ -x "$KAFKA_HOME/bin/kafka-server-start.sh" ]] || { echo "no Kafka in $KAFKA_HOME: see cluster/README.md" >&2; exit 1; }
 
-# stop_pid <pid> <name> <seconds>: TERM to its process group (the commands run under setsid, so
-# this reaches e.g. the JVM and Python driver under spark-submit), wait, then KILL
+# alive <pid>: true while any process of its process group is running (the commands run under setsid,
+# so pid = group id; a group's children, e.g. the scorers of scorer_group.py, can outlive the leader)
+alive() { [[ -n "$1" ]] && { kill -0 -- "-$1" 2>/dev/null || kill -0 "$1" 2>/dev/null; }; }
+
+# stop_pid <pid> <name> <seconds>: TERM to its process group (this reaches e.g. the JVM and Python driver
+# under spark-submit, and every scorer), wait until the whole group has exited, then KILL
 stop_pid() {
     local pid="$1" name="$2" t="$3"
-    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null || return 0
-    echo "stopping $name (pid $pid)"
+    alive "$pid" || return 0
+    echo "stopping $name (pid $pid, whole process group; up to ${t}s)  $(date -u +%FT%TZ)"
     kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-    for ((i = 0; i < t * 2; i++)); do kill -0 "$pid" 2>/dev/null || return 0; sleep 0.5; done
+    for ((i = 0; i < t * 2; i++)); do alive "$pid" || { echo "$name stopped"; return 0; }; sleep 0.5; done
     echo "$name did not stop in ${t}s: KILL"
     kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
 }
+
+# Job end time (epoch s) from Slurm: SLURM_JOB_END_TIME if set, else squeue; empty if unknown
+job_end() {
+    if [[ "${SLURM_JOB_END_TIME:-}" =~ ^[0-9]+$ ]]; then echo "$SLURM_JOB_END_TIME"; return; fi
+    local e
+    e=$(squeue -h -j "$SLURM_JOB_ID" -o %e 2>/dev/null | head -1)
+    [[ -n "$e" && "$e" != "N/A" && "$e" != "Unknown" ]] && date -d "$e" +%s 2>/dev/null || true
+}
+past_deadline() { [[ -n "$DEADLINE" ]] && (( $(date +%s) >= DEADLINE )); }
 
 cleanup() {
     local status=$?
     set +e
     stop_pid "$PRODUCER_PID" producer 10
-    stop_pid "$CONSUMER_PID" consumer 10
+    touch "${KAFKA_PRODUCER_DONE:-/dev/null}" 2>/dev/null
+    stop_pid "$CONSUMER_PID" consumer "$CONSUMER_STOP_GRACE_S"  # every scorer writes its output first
     stop_pid "$BROKER_PID" broker 30
     wait 2>/dev/null
     if [[ -f "$WORK/logs/server.log" ]]; then
@@ -113,6 +139,14 @@ group.initial.rebalance.delay.ms=0
 EOF
 
 echo "job=$STEP_TAG node=$(hostname) cpus=${SLURM_CPUS_PER_TASK:-?} mem=${SLURM_MEM_PER_NODE:-?}M kafka=$(readlink -f "$KAFKA_HOME")"
+END_TIME=$(job_end)
+DEADLINE=""
+if [[ -n "$END_TIME" ]]; then
+    DEADLINE=$((END_TIME - STOP_RESERVE_S))
+    echo "job ends $(date -u -d "@$END_TIME" +%FT%TZ): the run is stopped at $(date -u -d "@$DEADLINE" +%FT%TZ) if not done (STOP_RESERVE_S=$STOP_RESERVE_S)"
+else
+    echo "WARNING: job end time unknown: no time-limit guard (only the trap on SIGTERM)"
+fi
 echo "bootstrap=$KAFKA_BOOTSTRAP controller=127.0.0.1:$CONTROLLER_PORT topic=$KAFKA_TOPIC partitions=$PARTITIONS work=$WORK start=$(date -u +%FT%TZ)"
 
 "$KAFKA_HOME/bin/kafka-storage.sh" format -t "$("$KAFKA_HOME/bin/kafka-storage.sh" random-uuid)" \
@@ -140,6 +174,7 @@ for t in ${EXTRA_TOPICS:-}; do
 done
 
 export KAFKA_CONSUMER_READY="$WORK/consumer.ready"
+export KAFKA_PRODUCER_DONE="$WORK/producer.done"
 echo "===== consumer: $CONSUMER_CMD"
 setsid bash -c "$CONSUMER_CMD" &
 CONSUMER_PID=$!
@@ -154,21 +189,45 @@ echo "===== producer: $PRODUCER_CMD"
 t0=$SECONDS
 setsid bash -c "$PRODUCER_CMD" &
 PRODUCER_PID=$!
+TIME_UP=0
+while kill -0 "$PRODUCER_PID" 2>/dev/null; do
+    if past_deadline; then TIME_UP=1; break; fi
+    sleep 1
+done
 PRODUCER_STATUS=0
+if (( TIME_UP )); then
+    echo "TIME LIMIT: producer still running ${STOP_RESERVE_S}s before the job ends"
+    stop_pid "$PRODUCER_PID" producer 10
+    PRODUCER_STATUS=$TIME_LIMIT_EXIT
+fi
 wait "$PRODUCER_PID" || PRODUCER_STATUS=$?
 PRODUCER_PID=""
+touch "$KAFKA_PRODUCER_DONE"
 echo "producer exit_status=$PRODUCER_STATUS after $((SECONDS - t0)) s"
 
-# The consumer stops by itself once it has been idle; give it CONSUMER_WAIT_S at most
-CONSUMER_STATUS=0
-for ((i = 0; i < CONSUMER_WAIT_S * 2; i++)); do kill -0 "$CONSUMER_PID" 2>/dev/null || break; sleep 0.5; done
-if kill -0 "$CONSUMER_PID" 2>/dev/null; then
-    echo "consumer still running after ${CONSUMER_WAIT_S}s: stopping it"
-    stop_pid "$CONSUMER_PID" consumer 10
+# The consumer stops by itself: a count consumer when idle, scorer_group.py once the producer is done and
+# its lag is 0. Wait for its whole process group, until the time-limit deadline or CONSUMER_WAIT_S if set.
+t1=$SECONDS
+while (( ! TIME_UP )) && alive "$CONSUMER_PID"; do
+    if past_deadline; then
+        TIME_UP=1
+        echo "TIME LIMIT: consumer still running ${STOP_RESERVE_S}s before the job ends"
+    elif (( CONSUMER_WAIT_S > 0 && SECONDS - t1 >= CONSUMER_WAIT_S )); then
+        echo "consumer still running ${CONSUMER_WAIT_S}s after the producer (CONSUMER_WAIT_S): stopping it"
+        break
+    fi
+    (( TIME_UP )) || sleep 1
+done
+FORCED_STOP=0
+if alive "$CONSUMER_PID"; then
+    FORCED_STOP=1
+    stop_pid "$CONSUMER_PID" consumer "$CONSUMER_STOP_GRACE_S"  # each scorer still writes its output
 fi
+CONSUMER_STATUS=0
 wait "$CONSUMER_PID" || CONSUMER_STATUS=$?
 CONSUMER_PID=""
-echo "consumer exit_status=$CONSUMER_STATUS"
+echo "consumer exit_status=$CONSUMER_STATUS after $((SECONDS - t1)) s after the producer  $(date -u +%FT%TZ)"
+(( FORCED_STOP && CONSUMER_STATUS == 0 )) && CONSUMER_STATUS=1  # stopped from outside: never a clean run
 
 "$KAFKA_HOME/bin/kafka-get-offsets.sh" --bootstrap-server "$KAFKA_BOOTSTRAP" --topic "$KAFKA_TOPIC" \
     | awk -F: '{n += $3} END {print "messages in topic: " n}'
@@ -178,4 +237,8 @@ for t in ${EXTRA_TOPICS:-}; do
 done
 du -sh "$WORK/data" | awk '{print "broker data on /scratch: " $1}'
 
+if (( TIME_UP )); then
+    echo "FAILED: TIME LIMIT reached: the run was stopped before the end; see the consumer's INCOMPLETE line above for how much was processed"
+    exit "$TIME_LIMIT_EXIT"
+fi
 (( PRODUCER_STATUS == 0 && CONSUMER_STATUS == 0 ))
