@@ -37,11 +37,14 @@ STEPS = [
     (r"^features$", "features"),
     (r"^baselines-prov$", "baselines (provisional)"),
     (r"^baselines-month$", "baselines (per month, feedback 3.3)"),
-    (r"^scorer-.*$", "scorer runs"),
-    (r"^kafka.*$", "kafka streaming tests"),
+    (r"^(scorer-.*|compare-scores|smoke-rebalance)$", "scorer runs"),
+    (r"^(kafka.*|smoke-timelimit)$", "kafka streaming tests"),
+    (r"^serving-v2$", "serving_v2 replay (full day 2026-10-22)"),
     (r"^serving.*$", "serving"),
     (r"^labels$", "labels"),
     (r"^partition-sizes$", "partition sizes (feedback 3.2)"),
+    (r"^(compact-lake|compaction-.*|zstd-test)$", "lake compaction (feedback 3.2)"),
+    (r"^(labels-zip|zip-exports)$", "exports (packaging)"),
 ]
 COLUMNS = ["step", "month", "jobs", "jobs_failed_or_cancelled", "elapsed_h", "core_hours", "cpu_used_hours",
            "cpu_efficiency", "mem_alloc_gb_hours", "peak_rss_gb", "job_ids"]
@@ -87,6 +90,8 @@ def classify(name: str, submit: str) -> str:
         return "labels (API probes)"
     if "parse_scaling" in submit:
         return "parse scaling experiment"
+    if "/compaction/" in submit:
+        return "lake compaction (feedback 3.2)"
     return "setup and checks"
 
 
