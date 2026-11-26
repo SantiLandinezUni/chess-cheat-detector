@@ -1,7 +1,7 @@
 """Privacy check on the serving schema (workstream E2), run before the database dump.
 
 Fails (exit code 1) if any serving table or view has a column that could identify a player
-or a game (username, game_id, ...), or if a player_id is not a 16-character hash.
+or a game (username, game_id, ...), or if a player_id or game_key is not a 16-character hex hash.
 
 Usage:
     python -m src.serving.privacy_check --config config/serving.yaml
@@ -34,19 +34,19 @@ def main() -> None:
         for table, column in cols:
             if column.lower() in FORBIDDEN or "username" in column.lower():
                 failures.append(f"serving.{table}.{column}: identifying column")
-        tables = {t for t, c in cols if c == "player_id"}
-        for table in sorted(tables):
-            bad = conn.execute(text(
-                f"SELECT COUNT(*) FROM serving.{table} "
-                "WHERE player_id IS NOT NULL AND player_id !~ '^[0-9a-f]{16}$'")).scalar()
-            if bad:
-                failures.append(f"serving.{table}: {bad} player_id values are not 16-hex hashes")
+        for key in ("player_id", "game_key"):
+            for table in sorted({t for t, c in cols if c == key}):
+                bad = conn.execute(text(
+                    f"SELECT COUNT(*) FROM serving.{table} "
+                    f"WHERE {key} IS NOT NULL AND {key} !~ '^[0-9a-f]{{16}}$'")).scalar()
+                if bad:
+                    failures.append(f"serving.{table}: {bad} {key} values are not 16-hex hashes")
         print(f"Checked {len({t for t, _ in cols})} serving tables/views, {len(cols)} columns.")
 
     if failures:
         print("PRIVACY CHECK FAILED:\n  " + "\n  ".join(failures))
         sys.exit(1)
-    print("Privacy check passed: no usernames or game_ids, all player_id values are hashes.")
+    print("Privacy check passed: no usernames or game_ids, all player_id and game_key values are hashes.")
 
 
 if __name__ == "__main__":

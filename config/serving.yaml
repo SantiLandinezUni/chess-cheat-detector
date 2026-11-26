@@ -8,8 +8,15 @@ postgres:
 
 live_scores:
   # A parquet file or a folder of parquet files (lake/scores/live_game/run_id=<id>/).
-  path: data/serving/scores_60k_games.parquet
-  run_id: oct-60k-sample
+  # serving_v2: the full day of 2026-10-22 scored with the final baselines (lake/baselines).
+  # run_id is taken from the file if it has one; this value is the fallback.
+  path: data/serving/serving_v2/live_scores
+  run_id: oct22-full-day
+
+# Move-by-move running scores of about 1,000 games (game_key, ply, score). Optional.
+running_scores:
+  path: data/serving/serving_v2/running_scores
+  run_id: oct22-full-day
 
 # Optional tables: loaded as-is (same columns as the data dictionary) into serving.<table>.
 optional_tables:

@@ -4,11 +4,16 @@ Usage:
     python -m src.serving.load_serving --config config/serving.yaml
 
 Privacy rules applied here:
-  * the Lichess ``game_id`` never reaches the database: it is replaced by ``game_key``,
-    a keyed hash (HMAC-SHA256 with LICHESS_HASH_KEY, first 12 hex characters);
-  * any input that carries a ``username`` or ``game_id`` column after this step is refused.
+  * games are identified only by ``game_key`` (16 hex characters). The scorer export from the
+    cluster already carries it. If a file still has the Lichess ``game_id``, it is hashed here
+    (HMAC-SHA256 with LICHESS_HASH_KEY, first 16 hex characters) and dropped;
+  * any input that carries a ``username`` or ``game_id`` column after this step is refused, and
+    every player_id / game_key must be a 16-character hex hash.
 
-Each table is replaced inside one transaction, so a rerun never duplicates rows.
+Scorer tables (live_scores, running_scores) are partitioned by run_id. A run is replaced by a
+partition swap: COPY into a staging table, check the row count, then detach + drop the old
+partition and attach the new one, all in one transaction (FEEDBACK_ACTIONS 3.4). Input is read
+in batches, so the full day (about 6M player-games) loads on a laptop.
 """
 from __future__ import annotations
 
@@ -18,16 +23,20 @@ import hmac
 import io
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.dataset as ds
 import yaml
 from sqlalchemy import create_engine, text
 
 LOG = logging.getLogger("load_serving")
 FORBIDDEN = {"username", "game_id", "white", "black", "site"}
+HEX16 = re.compile(r"^[0-9a-f]{16}$")
 SCHEMA_SQL = Path(__file__).resolve().parents[2] / "sql" / "serving_schema.sql"
+BATCH_ROWS = 200_000
 
 LIVE_COLUMNS = [
     "run_id", "game_key", "player_id", "color", "time_class", "elo", "band_id", "n_plies",
@@ -36,84 +45,174 @@ LIVE_COLUMNS = [
     "z_share_moves_under_2s", "z_move_time_cv_low_clock", "n_score_features", "confidence",
     "risk_score", "end_reason", "rule_version", "baselines", "scored_at",
 ]
+# Nullable columns: filled with NULL (and a warning) if a scorer version does not export them.
+LIVE_NULLABLE = {"elo", "band_id", "move_time_mean_s", "move_time_cv", "share_moves_under_2s",
+                 "share_low_clock", "move_time_cv_low_clock", "z_move_time_cv",
+                 "z_share_moves_under_2s", "z_move_time_cv_low_clock", "risk_score"}
+RUNNING_COLUMNS = ["run_id", "game_key", "ply", "color", "player_id", "score"]
+RUNNING_NULLABLE = {"color", "player_id"}
+RUNNING_RENAME = {"risk_score": "score", "running_score": "score", "running_risk_score": "score"}
 
 
-def hash_key() -> bytes:
-    """Read LICHESS_HASH_KEY from the environment or the local .env file."""
+# ---------------------------------------------------------------- hashing and privacy
+def hash_key() -> bytes | None:
+    """LICHESS_HASH_KEY from the environment or .env; only needed if a file has game_id."""
     key = os.environ.get("LICHESS_HASH_KEY")
     if not key and Path(".env").exists():
         for line in Path(".env").read_text().splitlines():
             if line.startswith("LICHESS_HASH_KEY="):
                 key = line.split("=", 1)[1].strip().strip('"').strip("'")
-    if not key:
-        sys.exit("LICHESS_HASH_KEY is not set (environment or .env).")
-    return key.encode()
+    return key.encode() if key else None
 
 
 def game_key(game_id: str, key: bytes) -> str:
-    return hmac.new(key, game_id.encode(), hashlib.sha256).hexdigest()[:12]
+    return hmac.new(key, game_id.encode(), hashlib.sha256).hexdigest()[:16]
 
 
-def read_any(path: Path) -> pd.DataFrame:
-    if path.suffix == ".csv":
-        return pd.read_csv(path)
-    return pd.read_parquet(path)  # a file or a folder of parquet files
+def add_game_key(df: pd.DataFrame, name: str) -> pd.DataFrame:
+    """Use the pre-hashed game_key; hash game_id only if the file still has it."""
+    if "game_id" in df.columns:
+        if "game_key" not in df.columns:
+            key = hash_key()
+            if key is None:
+                sys.exit(f"{name}: has game_id but LICHESS_HASH_KEY is not set")
+            df["game_key"] = df["game_id"].astype(str).map(lambda g: game_key(g, key))
+        df = df.drop(columns=["game_id"])
+    if "game_key" not in df.columns:
+        sys.exit(f"{name}: no game_key column")
+    return df
 
 
 def check_privacy(df: pd.DataFrame, name: str) -> None:
     bad = FORBIDDEN & {c.lower() for c in df.columns}
     if bad:
         sys.exit(f"{name}: refused, it contains identifying columns {sorted(bad)}")
-    if "player_id" in df.columns:
-        lengths = df["player_id"].dropna().astype(str).str.len().unique()
-        if set(lengths) - {16}:
-            sys.exit(f"{name}: player_id values are not all 16-character hashes")
+    for col in ("player_id", "game_key"):
+        if col in df.columns:
+            vals = df[col].dropna().astype(str)
+            if not vals.str.fullmatch(HEX16.pattern).all():
+                sys.exit(f"{name}: {col} values are not all 16-character hex hashes")
 
 
-def copy_replace(conn, table: str, df: pd.DataFrame, where: str | None = None,
-                 params: dict | None = None) -> None:
-    """Delete the old rows and COPY the new ones, inside the caller's transaction."""
-    conn.execute(text(f"DELETE FROM {table}" + (f" WHERE {where}" if where else "")), params or {})
+# ---------------------------------------------------------------- reading
+def dataset(path: Path) -> ds.Dataset:
+    fmt = "csv" if path.suffix == ".csv" else "parquet"
+    return ds.dataset(str(path), format=fmt, partitioning="hive")
+
+
+def batches(path: Path):
+    for batch in dataset(path).to_batches(batch_size=BATCH_ROWS):
+        yield batch.to_pandas()
+
+
+def read_any(path: Path) -> pd.DataFrame:
+    return pd.read_csv(path) if path.suffix == ".csv" else pd.read_parquet(path)
+
+
+def conform(df: pd.DataFrame, columns: list[str], nullable: set[str], run_id: str,
+            name: str, warned: set[str]) -> pd.DataFrame:
+    if "run_id" not in df.columns:
+        df["run_id"] = run_id
+    df["run_id"] = df["run_id"].astype(str)
+    missing = [c for c in columns if c not in df.columns]
+    hard = [c for c in missing if c not in nullable]
+    if hard:
+        sys.exit(f"{name}: missing required columns {hard}")
+    for c in missing:
+        if c not in warned:
+            LOG.warning("%s: column %s not in the input, loaded as NULL", name, c)
+            warned.add(c)
+        df[c] = None
+    return df[columns]
+
+
+# ---------------------------------------------------------------- partition swap
+def part_name(table: str, run_id: str) -> str:
+    return f"{table}__{re.sub(r'[^a-z0-9]+', '_', run_id.lower()).strip('_')}"[:63]
+
+
+def copy_df(conn, table: str, df: pd.DataFrame) -> None:
     buf = io.StringIO()
     df.to_csv(buf, index=False, header=False, na_rep="\\N")
     buf.seek(0)
-    raw = conn.connection.dbapi_connection.cursor()
-    cols = ", ".join(df.columns)
-    raw.copy_expert(f"COPY {table} ({cols}) FROM STDIN WITH (FORMAT csv, NULL '\\N')", buf)
+    cur = conn.connection.dbapi_connection.cursor()
+    cur.copy_expert(f"COPY {table} ({', '.join(df.columns)}) FROM STDIN WITH (FORMAT csv, NULL '\\N')", buf)
 
 
-def load_live_scores(engine, cfg: dict, key: bytes) -> int:
+def swap_partition(conn, table: str, run_id: str, staging: str) -> None:
+    """Replace the run_id partition of serving.<table> with the staging table."""
+    final = part_name(table, run_id)
+    old = conn.execute(text(
+        "SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid "
+        "JOIN pg_class p ON p.oid = i.inhparent JOIN pg_namespace n ON n.oid = p.relnamespace "
+        "WHERE n.nspname = 'serving' AND p.relname = :t "
+        "AND pg_get_expr(c.relpartbound, c.oid) = :bound"),
+        {"t": table, "bound": f"FOR VALUES IN ('{run_id}')"}).scalar()
+    if old:
+        conn.execute(text(f"ALTER TABLE serving.{table} DETACH PARTITION serving.{old}"))
+        conn.execute(text(f"DROP TABLE serving.{old}"))
+    conn.execute(text(f"ALTER TABLE serving.{staging} RENAME TO {final}"))
+    conn.execute(text(f"ALTER TABLE serving.{table} ATTACH PARTITION serving.{final} "
+                      f"FOR VALUES IN ('{run_id}')"))
+    LOG.info("serving.%s: partition %s %s", table, final, "replaced" if old else "attached")
+
+
+def load_partitioned(engine, table: str, cfg: dict, columns: list[str], nullable: set[str],
+                     rename: dict | None = None) -> dict[str, int]:
     path = Path(cfg["path"])
     if not path.exists():
-        LOG.warning("live scores: %s not found, skipped", path)
-        return 0
-    df = read_any(path)
-    df["game_key"] = df["game_id"].astype(str).map(lambda g: game_key(g, key))
-    df = df.drop(columns=["game_id"])
-    df["run_id"] = df["run_id"] if "run_id" in df.columns else cfg["run_id"]
-    df = df[LIVE_COLUMNS]
-    check_privacy(df, "live_scores")
+        LOG.warning("%s: %s not found, skipped", table, path)
+        return {}
+    counts: dict[str, int] = {}
+    warned: set[str] = set()
     with engine.begin() as conn:
-        copy_replace(conn, "serving.live_scores", df, "run_id = :r", {"r": cfg["run_id"]})
-        n = conn.execute(text("SELECT COUNT(*) FROM serving.live_scores WHERE run_id = :r"),
-                         {"r": cfg["run_id"]}).scalar()
-    if n != len(df):
-        sys.exit(f"live_scores: loaded {n} rows, expected {len(df)}")
-    LOG.info("serving.live_scores: %d rows (run %s)", n, cfg["run_id"])
-    return n
+        for df in batches(path):
+            if rename:
+                df = df.rename(columns={k: v for k, v in rename.items()
+                                        if k in df.columns and v not in df.columns})
+            df = add_game_key(df, table)
+            df = conform(df, columns, nullable, cfg["run_id"], table, warned)
+            check_privacy(df, table)
+            for run_id, part in df.groupby("run_id", sort=False):
+                if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", run_id):
+                    sys.exit(f"{table}: run_id {run_id!r} has unexpected characters")
+                staging = f"stage_{part_name(table, run_id)}"[:63]
+                if run_id not in counts:
+                    conn.execute(text(f"DROP TABLE IF EXISTS serving.{staging}"))
+                    conn.execute(text(f"CREATE TABLE serving.{staging} (LIKE serving.{table} "
+                                      "INCLUDING DEFAULTS INCLUDING CONSTRAINTS)"))
+                    # Lets ATTACH skip the validation scan of the new partition.
+                    conn.execute(text(f"ALTER TABLE serving.{staging} ADD CONSTRAINT "
+                                      f"{staging[:50]}_run CHECK (run_id = '{run_id}')"))
+                    counts[run_id] = 0
+                copy_df(conn, f"serving.{staging}", part)
+                counts[run_id] += len(part)
+            LOG.info("%s: %s rows staged", table, f"{sum(counts.values()):,}")
+        for run_id, n in counts.items():
+            staging = f"stage_{part_name(table, run_id)}"[:63]
+            got = conn.execute(text(f"SELECT COUNT(*) FROM serving.{staging}")).scalar()
+            if got != n:
+                sys.exit(f"{table}: staged {got} rows for {run_id}, expected {n}")  # rolls back
+            swap_partition(conn, table, run_id, staging)
+    for run_id, n in counts.items():
+        LOG.info("serving.%s: %s rows (run %s)", table, f"{n:,}", run_id)
+    return counts
 
 
+# ---------------------------------------------------------------- small tables
 def load_optional(engine, name: str, path_str: str) -> int:
     path = Path(path_str)
     if not path.exists():
         LOG.warning("%s: %s not found, skipped", name, path)
         return 0
     df = read_any(path)
+    if "game_id" in df.columns or "game_key" in df.columns:
+        df = add_game_key(df, name)
     check_privacy(df, name)
     with engine.begin() as conn:
         conn.execute(text(f"DROP TABLE IF EXISTS serving.{name}"))
         df.head(0).to_sql(name, conn, schema="serving", index=False)
-        copy_replace(conn, f"serving.{name}", df)
+        copy_df(conn, f"serving.{name}", df)
     LOG.info("serving.%s: %d rows", name, len(df))
     return len(df)
 
@@ -130,8 +229,10 @@ def main() -> None:
     with engine.begin() as conn:
         conn.execute(text(SCHEMA_SQL.read_text()))
 
-    key = hash_key()
-    load_live_scores(engine, cfg["live_scores"], key)
+    load_partitioned(engine, "live_scores", cfg["live_scores"], LIVE_COLUMNS, LIVE_NULLABLE)
+    if cfg.get("running_scores"):
+        load_partitioned(engine, "running_scores", cfg["running_scores"], RUNNING_COLUMNS,
+                         RUNNING_NULLABLE, RUNNING_RENAME)
     for name, path in (cfg.get("optional_tables") or {}).items():
         load_optional(engine, name, path)
 
