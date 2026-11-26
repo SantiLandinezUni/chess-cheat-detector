@@ -23,6 +23,7 @@ createdb "$CHECK_DB"
 pg_restore --no-owner --dbname="$CHECK_DB" "$DUMP"
 
 QUERY="SELECT 'live_scores', COUNT(*) FROM serving.live_scores
+       UNION ALL SELECT 'running_scores', COUNT(*) FROM serving.running_scores
        UNION ALL SELECT 'rating_bands', COUNT(*) FROM serving.rating_bands"
 psql -At -F, -d "$DB" -c "$QUERY" | sort > /tmp/serving_counts_src.csv
 psql -At -F, -d "$CHECK_DB" -c "$QUERY" | sort > /tmp/serving_counts_restored.csv
