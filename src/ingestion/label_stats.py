@@ -47,14 +47,21 @@ def wilson(k: int, n: int, z: float = 1.96) -> tuple[float | None, float | None]
     return round(100 * (centre - half), 3), round(100 * (centre + half), 3)
 
 
-def fisher_two_sided(a: int, b: int, c: int, d: int) -> float:
-    """Fisher exact test on the 2x2 table [[a, b], [c, d]], two-sided, in log space (large n)."""
+def fisher_log10_p(a: int, b: int, c: int, d: int) -> float:
+    """log10 of the two-sided Fisher exact p-value for the 2x2 table [[a, b], [c, d]].
+
+    Summed in log space (log-sum-exp): with large tables p can be far below the smallest float
+    (~1e-308), and exp() would round it to 0, which is not a valid p-value.
+    """
     n1, total, k_total = a + b, a + b + c + d, a + c
     log_comb = lambda n, k: math.lgamma(n + 1) - math.lgamma(k + 1) - math.lgamma(n - k + 1)
     log_pmf = lambda k: log_comb(k_total, k) + log_comb(total - k_total, n1 - k) - log_comb(total, n1)
     observed = log_pmf(a)
     support = range(max(0, n1 - (total - k_total)), min(k_total, n1) + 1)
-    return min(1.0, sum(math.exp(log_pmf(k)) for k in support if log_pmf(k) <= observed + 1e-7))
+    terms = [lp for lp in map(log_pmf, support) if lp <= observed + 1e-7]
+    top = max(terms)
+    log_p = top + math.log(sum(math.exp(lp - top) for lp in terms))
+    return min(0.0, log_p / math.log(10))
 
 
 def band_label(band_id: int) -> str:
@@ -97,14 +104,16 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     log.info("wrote %s (%d rows)", path, len(rows))
 
 
-def summary_rows(sample: DataFrame, labels: DataFrame) -> list[dict[str, Any]]:
+def summary_rows(sample: DataFrame, labels: DataFrame, population: int) -> list[dict[str, Any]]:
+    """`eligible_population`: players in lake/anomaly/player, the population both parts are drawn from."""
     sampled = {r["sample_source"]: r["n"] for r in sample.groupBy("sample_source").agg(F.count("*").alias("n")).collect()}
     per_part = {r["sample_source"]: r.asDict() for r in label_counts(labels, "sample_source").collect()}
     total = label_counts(labels.withColumn("sample_source", F.lit("all")), "sample_source").first().asDict()
     rows = []
     for part in sorted(per_part) + ["all"]:
         row = per_part[part] if part != "all" else total
-        row = {"sample_source": part, "sampled": sampled.get(part, sum(sampled.values())), **{
+        row = {"sample_source": part, "eligible_population": population,
+               "sampled": sampled.get(part, sum(sampled.values())), **{
             k: v for k, v in row.items() if k != "sample_source"}}
         rows.append(with_share(row))
     return rows
@@ -124,7 +133,9 @@ def enrichment_row(summary: list[dict[str, Any]]) -> dict[str, Any] | None:
         "ratio_of_shares": round(hi["positive_pct"] / rnd["positive_pct"], 3) if rnd["positive_pct"] else None,
         "odds_ratio": round(a * d / (b * c), 3) if b and c else None,
         "expected_high_anomaly_positive_if_no_effect": round(k_total * n_hi / total, 1),
-        "fisher_p_two_sided": float(f"{fisher_two_sided(a, b, c, d):.4g}"),
+        # p itself underflows to 0.0 below ~1e-308; log10_p is always exact enough to report
+        "fisher_p_two_sided": float(f"{10 ** fisher_log10_p(a, b, c, d):.4g}"),
+        "fisher_log10_p_two_sided": round(fisher_log10_p(a, b, c, d), 2),
     }
 
 
@@ -175,7 +186,8 @@ def main() -> None:
     with log_duration(log, STEP):
         sample = spark.read.parquet(f"{lake}/labels_sample")
         labels = spark.read.parquet(f"{lake}/labels")
-        summary = summary_rows(sample, labels)
+        anomaly = spark.read.parquet(f"{lake}/anomaly/player")
+        summary = summary_rows(sample, labels, anomaly.select("player_id").distinct().count())
         write_csv(out_dir / f"labels_summary_{env}.csv", summary)
         for r in summary:
             log.info("%s: sampled=%d labelled=%d positive=%d negative=%d unknown=%d positive_pct=%s [%s, %s]",
@@ -186,13 +198,13 @@ def main() -> None:
         enrichment = enrichment_row(summary)
         if enrichment:
             write_csv(out_dir / f"labels_enrichment_{env}.csv", [enrichment])
-            log.info("enrichment high_anomaly vs random: ratio %s, odds ratio %s, Fisher p=%.3g",
-                     enrichment["ratio_of_shares"], enrichment["odds_ratio"], enrichment["fisher_p_two_sided"])
+            log.info("enrichment high_anomaly vs random: ratio %s, odds ratio %s, Fisher p=%.3g (log10 p = %s)",
+                     enrichment["ratio_of_shares"], enrichment["odds_ratio"], enrichment["fisher_p_two_sided"],
+                     enrichment["fisher_log10_p_two_sided"])
         else:
             log.warning("no high_anomaly and random parts both present: enrichment file not written")
 
-        write_csv(out_dir / f"labels_by_band_time_class_{env}.csv",
-                  band_time_class_rows(labels, spark.read.parquet(f"{lake}/anomaly/player")))
+        write_csv(out_dir / f"labels_by_band_time_class_{env}.csv", band_time_class_rows(labels, anomaly))
 
         if args.part1_csv:
             rows = part1_rows(spark, cfg, args.part1_csv)
