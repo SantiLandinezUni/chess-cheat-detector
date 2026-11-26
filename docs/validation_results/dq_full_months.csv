@@ -1,0 +1,43 @@
+source_month,check_id,level,applies_to,description,status,violations,value,threshold,rows_games,rows_moves,generated_at
+2026-08,games_pk,hard,games,game_id unique and not null,pass,0,,,91912325,6105818279,2026-11-12T01:22:44Z
+2026-08,moves_pk,hard,moves,"(game_id, ply) unique",pass,0,,,91912325,6105818279,2026-11-12T01:22:44Z
+2026-08,games_required_not_null,hard,games,required (NN) columns not null,pass,0,,,91912325,6105818279,2026-11-12T01:22:44Z
+2026-08,moves_required_not_null,hard,moves,required (NN) columns not null,pass,0,,,91912325,6105818279,2026-11-12T01:22:44Z
+2026-08,games_result_allowed,hard,games,"result in ['1-0', '0-1', '1/2-1/2', '*']",pass,0,,,91912325,6105818279,2026-11-12T01:22:44Z
+2026-08,games_distinct_players,hard,games,white_id != black_id,pass,0,,,91912325,6105818279,2026-11-12T01:22:44Z
+2026-08,moves_fk_games,hard,moves,every moves.game_id exists in games,pass,0,,,91912325,6105818279,2026-11-12T01:22:44Z
+2026-08,n_plies_matches_moves,hard,"games, moves",n_plies = count of moves rows,pass,0,,,91912325,6105818279,2026-11-12T01:22:44Z
+2026-08,elo_range,soft,games,Elo between 400 and 3500,warn,59,,"[400, 3500]",91912325,6105818279,2026-11-12T01:22:44Z
+2026-08,move_time_negative,soft,moves,move_time_s < -1.0 s,warn,1846851,,-1.0,91912325,6105818279,2026-11-12T01:22:44Z
+2026-08,zero_plies,soft,games,n_plies = 0,warn,170379,,,91912325,6105818279,2026-11-12T01:22:44Z
+2026-08,share_no_clock,soft,games,share of games with has_clock = false > 5%,pass,257301,0.0028,0.05,91912325,6105818279,2026-11-12T01:22:44Z
+2026-08,bot_games,soft,games,"games with a BOT-title player (kept, flagged, excluded from human baselines)",warn,407102,,,91912325,6105818279,2026-11-12T01:22:44Z
+2026-08,players_have_labels,soft,labels,every player in games has a row in player_labels,pending,,,,91912325,6105818279,2026-11-12T01:22:44Z
+2026-09,games_pk,hard,games,game_id unique and not null,pass,0,,,89616462,5931407140,2026-11-11T18:53:28Z
+2026-09,moves_pk,hard,moves,"(game_id, ply) unique",pass,0,,,89616462,5931407140,2026-11-11T18:53:28Z
+2026-09,games_required_not_null,hard,games,required (NN) columns not null,pass,0,,,89616462,5931407140,2026-11-11T18:53:28Z
+2026-09,moves_required_not_null,hard,moves,required (NN) columns not null,pass,0,,,89616462,5931407140,2026-11-11T18:53:28Z
+2026-09,games_result_allowed,hard,games,"result in ['1-0', '0-1', '1/2-1/2', '*']",pass,0,,,89616462,5931407140,2026-11-11T18:53:28Z
+2026-09,games_distinct_players,hard,games,white_id != black_id,pass,0,,,89616462,5931407140,2026-11-11T18:53:28Z
+2026-09,moves_fk_games,hard,moves,every moves.game_id exists in games,pass,0,,,89616462,5931407140,2026-11-11T18:53:28Z
+2026-09,n_plies_matches_moves,hard,"games, moves",n_plies = count of moves rows,pass,0,,,89616462,5931407140,2026-11-11T18:53:28Z
+2026-09,elo_range,soft,games,Elo between 400 and 3500,warn,144,,"[400, 3500]",89616462,5931407140,2026-11-11T18:53:28Z
+2026-09,move_time_negative,soft,moves,move_time_s < -1.0 s,warn,1866021,,-1.0,89616462,5931407140,2026-11-11T18:53:28Z
+2026-09,zero_plies,soft,games,n_plies = 0,warn,256060,,,89616462,5931407140,2026-11-11T18:53:28Z
+2026-09,share_no_clock,soft,games,share of games with has_clock = false > 5%,pass,339483,0.0038,0.05,89616462,5931407140,2026-11-11T18:53:28Z
+2026-09,bot_games,soft,games,"games with a BOT-title player (kept, flagged, excluded from human baselines)",warn,434571,,,89616462,5931407140,2026-11-11T18:53:28Z
+2026-09,players_have_labels,soft,labels,every player in games has a row in player_labels,pending,,,,89616462,5931407140,2026-11-11T18:53:28Z
+2026-10,games_pk,hard,games,game_id unique and not null,pass,0,,,95395628,6275657696,2026-11-10T16:39:57Z
+2026-10,moves_pk,hard,moves,"(game_id, ply) unique",pass,0,,,95395628,6275657696,2026-11-10T16:39:57Z
+2026-10,games_required_not_null,hard,games,required (NN) columns not null,pass,0,,,95395628,6275657696,2026-11-10T16:39:57Z
+2026-10,moves_required_not_null,hard,moves,required (NN) columns not null,pass,0,,,95395628,6275657696,2026-11-10T16:39:57Z
+2026-10,games_result_allowed,hard,games,"result in ['1-0', '0-1', '1/2-1/2', '*']",pass,0,,,95395628,6275657696,2026-11-10T16:39:57Z
+2026-10,games_distinct_players,hard,games,white_id != black_id,pass,0,,,95395628,6275657696,2026-11-10T16:39:57Z
+2026-10,moves_fk_games,hard,moves,every moves.game_id exists in games,pass,0,,,95395628,6275657696,2026-11-10T16:39:57Z
+2026-10,n_plies_matches_moves,hard,"games, moves",n_plies = count of moves rows,pass,0,,,95395628,6275657696,2026-11-10T16:39:57Z
+2026-10,elo_range,soft,games,Elo between 400 and 3500,warn,10,,"[400, 3500]",95395628,6275657696,2026-11-10T16:39:57Z
+2026-10,move_time_negative,soft,moves,move_time_s < -1.0 s,warn,2309678,,-1.0,95395628,6275657696,2026-11-10T16:39:57Z
+2026-10,zero_plies,soft,games,n_plies = 0,warn,407406,,,95395628,6275657696,2026-11-10T16:39:57Z
+2026-10,share_no_clock,soft,games,share of games with has_clock = false > 5%,pass,497391,0.0052,0.05,95395628,6275657696,2026-11-10T16:39:57Z
+2026-10,bot_games,soft,games,"games with a BOT-title player (kept, flagged, excluded from human baselines)",warn,494406,,,95395628,6275657696,2026-11-10T16:39:57Z
+2026-10,players_have_labels,soft,labels,every player in games has a row in player_labels,pending,,,,95395628,6275657696,2026-11-10T16:39:57Z
