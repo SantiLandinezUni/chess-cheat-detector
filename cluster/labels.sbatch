@@ -22,6 +22,9 @@
 # PAUSE_S=20, so ~100k players in ~2 h). Resumable: resubmit and step 2 fetches only the missing names.
 # If step 2 ends with failed batches it runs once more after 10 minutes; if batches still fail (e.g.
 # HTTP 403), the job stops before step 3, so no partial labels are written.
+# Token: set LICHESS_API_TOKEN in .env (personal token, no scopes) for the authenticated /api/users limits
+# (10,000 users per 10 min, 150,000 per day). Anonymous runs got HTTP 429 on every request after ~60k
+# users in one day (jobs 36568, 36804). With a token, PAUSE_S=30 stays at ~6,000 users per 10 min.
 # Privacy: the profiles hold usernames and stay in data/raw/profiles on the cluster. lake/labels and the
 # CSV files hold no usernames; only the CSVs are committed.
 # Output: logs/labels-<job id>.out, step logs in logs/

@@ -152,7 +152,7 @@ Setup steps for a new account are in `cluster/README.md`.
 - Logging to console and `logs/<step>_<UTC timestamp>.log`: start/end, input/output row counts, duration, quarantined count.
 - `src/quality/checks.py` runs after each step. **Hard checks** fail the step (PK uniqueness, required fields not null, `result` in the allowed set). **Soft checks** log warnings (Elo outside 400–3500, negative move times, games with 0 moves, BOT-title players).
 - **Quarantine:** a game that fails parsing or a hard check goes to `quarantine/` with `error_stage`, `error_code`, `error_detail`. One bad game never crashes the job.
-- **Lichess API:** one request at a time; on HTTP 429 wait 60 s, then retry, max 3 tries; set a descriptive `User-Agent`. **Cache:** skip usernames already in `restricted.user_profiles_raw` unless `--refresh`.
+- **Lichess API:** one request at a time; on HTTP 429 wait 60 s, then retry, max 3 tries; set a descriptive `User-Agent`; optional personal token `LICHESS_API_TOKEN` in `.env` (never logged or committed). **Cache:** skip usernames already in `restricted.user_profiles_raw` unless `--refresh`.
 
 ## Domain notes
 
