@@ -1,4 +1,4 @@
-sample_source,sampled,labelled,positive,negative,unknown_disabled,unknown_not_found,fetched_from,fetched_to,positive_pct,positive_pct_ci_low,positive_pct_ci_high
-high_anomaly,20000,20000,3880,15739,380,1,2026-11-23 17:15:27,2026-11-24 21:07:07,19.777,19.225,20.34
-random,80000,80000,1148,77716,1121,15,2026-11-23 17:15:27,2026-11-24 21:07:07,1.456,1.374,1.542
-all,100000,100000,5028,93455,1501,16,2026-11-23 17:15:27,2026-11-24 21:07:07,5.105,4.97,5.245
+sample_source,eligible_population,sampled,labelled,positive,negative,unknown_disabled,unknown_not_found,fetched_from,fetched_to,positive_pct,positive_pct_ci_low,positive_pct_ci_high
+high_anomaly,1538755,20000,20000,3880,15739,380,1,2026-11-23 17:15:27,2026-11-24 21:07:07,19.777,19.225,20.34
+random,1538755,80000,80000,1148,77716,1121,15,2026-11-23 17:15:27,2026-11-24 21:07:07,1.456,1.374,1.542
+all,1538755,100000,100000,5028,93455,1501,16,2026-11-23 17:15:27,2026-11-24 21:07:07,5.105,4.97,5.245
