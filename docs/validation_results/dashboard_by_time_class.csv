@@ -1,6 +1,6 @@
 time_class,player_games,median,high_pct
-blitz,53469.0,0.146,0.279
-bullet,41809.0,0.15,1.325
-classical,603.0,0.142,0.0
-rapid,18861.0,0.137,0.085
-ultrabullet,878.0,0.148,1.595
+blitz,2734152,0.144,0.278
+bullet,2065622,0.156,1.475
+classical,32613,0.124,0.009
+rapid,991464,0.131,0.093
+ultrabullet,46454,0.151,1.307

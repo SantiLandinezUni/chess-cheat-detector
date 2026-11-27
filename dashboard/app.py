@@ -5,12 +5,15 @@ never usernames or Lichess game IDs. Every chart is aggregated in SQL, so only s
 sets leave the database and the full day (about 6M player-games) runs on a laptop.
 
 Run:
-    streamlit run dashboard/app.py
-(set SERVING_DB_URL, or edit config/serving.yaml)
+    streamlit run dashboard/app.py                                  # config/serving.yaml
+    streamlit run dashboard/app.py -- --config config/other.yaml    # or SERVING_CONFIG=...
+SERVING_DB_URL overrides the database URL in the config.
 """
 from __future__ import annotations
 
+import argparse
 import os
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -20,7 +23,17 @@ import yaml
 from sqlalchemy import create_engine, inspect, text
 
 ROOT = Path(__file__).resolve().parents[1]
-CFG = yaml.safe_load((ROOT / "config" / "serving.yaml").read_text())
+
+
+def config_path() -> Path:
+    """--config after "--" on the streamlit command line, else SERVING_CONFIG, else the default."""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--config", default=os.environ.get("SERVING_CONFIG", "config/serving.yaml"))
+    path = Path(parser.parse_known_args(sys.argv[1:])[0].config)
+    return path if path.is_absolute() else ROOT / path
+
+
+CFG = yaml.safe_load(config_path().read_text())
 THRESHOLD = float(CFG["dashboard"]["high_risk_threshold"])
 TOP_N = int(CFG["dashboard"]["top_n_games"])
 ACCENT, NEUTRAL, LIGHT = "#B4232A", "#4A4A4A", "#9A9A9A"

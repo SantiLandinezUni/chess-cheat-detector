@@ -6,7 +6,8 @@ Usage:
 Privacy rules applied here:
   * games are identified only by ``game_key`` (16 hex characters). The scorer export from the
     cluster already carries it. If a file still has the Lichess ``game_id``, it is hashed here
-    (HMAC-SHA256 with LICHESS_HASH_KEY, first 16 hex characters) and dropped;
+    (HMAC-SHA256 with LICHESS_HASH_KEY from ``src.common.ids.load_hash_key``, first 16 hex
+    characters) and dropped;
   * any input that carries a ``username`` or ``game_id`` column after this step is refused, and
     every player_id / game_key must be a 16-character hex hash.
 
@@ -14,6 +15,9 @@ Scorer tables (live_scores, running_scores) are partitioned by run_id. A run is 
 partition swap: COPY into a staging table, check the row count, then detach + drop the old
 partition and attach the new one, all in one transaction (FEEDBACK_ACTIONS 3.4). Input is read
 in batches, so the full day (about 6M player-games) loads on a laptop.
+
+The live scores file is required: a missing file stops the load with an error. The timeline file
+has no run_id column, so its rows get the run_id of the live scores loaded in the same run.
 """
 from __future__ import annotations
 
@@ -31,6 +35,8 @@ import pandas as pd
 import pyarrow.dataset as ds
 import yaml
 from sqlalchemy import create_engine, text
+
+from src.common.ids import load_hash_key
 
 LOG = logging.getLogger("load_serving")
 FORBIDDEN = {"username", "game_id", "white", "black", "site"}
@@ -50,21 +56,12 @@ LIVE_NULLABLE = {"elo", "band_id", "move_time_mean_s", "move_time_cv", "share_mo
                  "share_low_clock", "move_time_cv_low_clock", "z_move_time_cv",
                  "z_share_moves_under_2s", "z_move_time_cv_low_clock", "risk_score"}
 RUNNING_COLUMNS = ["run_id", "game_key", "ply", "color", "player_id", "score"]
-RUNNING_NULLABLE = {"color", "player_id"}
-RUNNING_RENAME = {"risk_score": "score", "running_score": "score", "running_risk_score": "score"}
+RUNNING_NULLABLE = {"player_id"}
+RUNNING_RENAME = {"risk_score": "score", "running_score": "score", "running_risk_score": "score",
+                  "side": "color"}
 
 
 # ---------------------------------------------------------------- hashing and privacy
-def hash_key() -> bytes | None:
-    """LICHESS_HASH_KEY from the environment or .env; only needed if a file has game_id."""
-    key = os.environ.get("LICHESS_HASH_KEY")
-    if not key and Path(".env").exists():
-        for line in Path(".env").read_text().splitlines():
-            if line.startswith("LICHESS_HASH_KEY="):
-                key = line.split("=", 1)[1].strip().strip('"').strip("'")
-    return key.encode() if key else None
-
-
 def game_key(game_id: str, key: bytes) -> str:
     return hmac.new(key, game_id.encode(), hashlib.sha256).hexdigest()[:16]
 
@@ -73,9 +70,7 @@ def add_game_key(df: pd.DataFrame, name: str) -> pd.DataFrame:
     """Use the pre-hashed game_key; hash game_id only if the file still has it."""
     if "game_id" in df.columns:
         if "game_key" not in df.columns:
-            key = hash_key()
-            if key is None:
-                sys.exit(f"{name}: has game_id but LICHESS_HASH_KEY is not set")
+            key = load_hash_key()  # raises if LICHESS_HASH_KEY is not set
             df["game_key"] = df["game_id"].astype(str).map(lambda g: game_key(g, key))
         df = df.drop(columns=["game_id"])
     if "game_key" not in df.columns:
@@ -109,9 +104,11 @@ def read_any(path: Path) -> pd.DataFrame:
     return pd.read_csv(path) if path.suffix == ".csv" else pd.read_parquet(path)
 
 
-def conform(df: pd.DataFrame, columns: list[str], nullable: set[str], run_id: str,
+def conform(df: pd.DataFrame, columns: list[str], nullable: set[str], run_id: str | None,
             name: str, warned: set[str]) -> pd.DataFrame:
     if "run_id" not in df.columns:
+        if not run_id:
+            sys.exit(f"{name}: no run_id column and no run_id to inherit")
         df["run_id"] = run_id
     df["run_id"] = df["run_id"].astype(str)
     missing = [c for c in columns if c not in df.columns]
@@ -158,11 +155,16 @@ def swap_partition(conn, table: str, run_id: str, staging: str) -> None:
 
 
 def load_partitioned(engine, table: str, cfg: dict, columns: list[str], nullable: set[str],
-                     rename: dict | None = None) -> dict[str, int]:
+                     rename: dict | None = None, run_id: str | None = None,
+                     required: bool = False) -> dict[str, int]:
+    """Load one file or folder into serving.<table>. ``run_id`` is used for rows without one."""
     path = Path(cfg["path"])
     if not path.exists():
+        if required:
+            sys.exit(f"{table}: {path} not found (check the paths in config/serving.yaml)")
         LOG.warning("%s: %s not found, skipped", table, path)
         return {}
+    run_id = run_id or cfg.get("run_id")
     counts: dict[str, int] = {}
     warned: set[str] = set()
     with engine.begin() as conn:
@@ -171,31 +173,32 @@ def load_partitioned(engine, table: str, cfg: dict, columns: list[str], nullable
                 df = df.rename(columns={k: v for k, v in rename.items()
                                         if k in df.columns and v not in df.columns})
             df = add_game_key(df, table)
-            df = conform(df, columns, nullable, cfg["run_id"], table, warned)
+            df = conform(df, columns, nullable, run_id, table, warned)
             check_privacy(df, table)
-            for run_id, part in df.groupby("run_id", sort=False):
-                if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", run_id):
-                    sys.exit(f"{table}: run_id {run_id!r} has unexpected characters")
-                staging = f"stage_{part_name(table, run_id)}"[:63]
-                if run_id not in counts:
+            for rid, part in df.groupby("run_id", sort=False):
+                if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", rid):
+                    sys.exit(f"{table}: run_id {rid!r} has unexpected characters")
+                staging = f"stage_{part_name(table, rid)}"[:63]
+                if rid not in counts:
+                    LOG.info("%s: loading run %s", table, rid)
                     conn.execute(text(f"DROP TABLE IF EXISTS serving.{staging}"))
                     conn.execute(text(f"CREATE TABLE serving.{staging} (LIKE serving.{table} "
                                       "INCLUDING DEFAULTS INCLUDING CONSTRAINTS)"))
                     # Lets ATTACH skip the validation scan of the new partition.
                     conn.execute(text(f"ALTER TABLE serving.{staging} ADD CONSTRAINT "
-                                      f"{staging[:50]}_run CHECK (run_id = '{run_id}')"))
-                    counts[run_id] = 0
+                                      f"{staging[:50]}_run CHECK (run_id = '{rid}')"))
+                    counts[rid] = 0
                 copy_df(conn, f"serving.{staging}", part)
-                counts[run_id] += len(part)
+                counts[rid] += len(part)
             LOG.info("%s: %s rows staged", table, f"{sum(counts.values()):,}")
-        for run_id, n in counts.items():
-            staging = f"stage_{part_name(table, run_id)}"[:63]
+        for rid, n in counts.items():
+            staging = f"stage_{part_name(table, rid)}"[:63]
             got = conn.execute(text(f"SELECT COUNT(*) FROM serving.{staging}")).scalar()
             if got != n:
-                sys.exit(f"{table}: staged {got} rows for {run_id}, expected {n}")  # rolls back
-            swap_partition(conn, table, run_id, staging)
-    for run_id, n in counts.items():
-        LOG.info("serving.%s: %s rows (run %s)", table, f"{n:,}", run_id)
+                sys.exit(f"{table}: staged {got} rows for {rid}, expected {n}")  # rolls back
+            swap_partition(conn, table, rid, staging)
+    for rid, n in counts.items():
+        LOG.info("serving.%s: %s rows (run %s)", table, f"{n:,}", rid)
     return counts
 
 
@@ -229,10 +232,23 @@ def main() -> None:
     with engine.begin() as conn:
         conn.execute(text(SCHEMA_SQL.read_text()))
 
-    load_partitioned(engine, "live_scores", cfg["live_scores"], LIVE_COLUMNS, LIVE_NULLABLE)
+    threshold = float(cfg["dashboard"]["high_risk_threshold"])
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE serving.settings SET high_risk_threshold = :t"), {"t": threshold})
+    LOG.info("serving.settings: high_risk_threshold = %g", threshold)
+
+    live = load_partitioned(engine, "live_scores", cfg["live_scores"], LIVE_COLUMNS,
+                            LIVE_NULLABLE, required=True)
+    if not live:
+        sys.exit("live_scores: the file has no rows")
     if cfg.get("running_scores"):
+        # The timeline file has no run_id: it belongs to the live scores loaded above.
+        inherit = next(iter(live)) if len(live) == 1 else None
+        if inherit is None and not cfg["running_scores"].get("run_id"):
+            LOG.warning("running_scores: live scores have %d runs, set running_scores.run_id", len(live))
         load_partitioned(engine, "running_scores", cfg["running_scores"], RUNNING_COLUMNS,
-                         RUNNING_NULLABLE, RUNNING_RENAME)
+                         RUNNING_NULLABLE, RUNNING_RENAME,
+                         run_id=cfg["running_scores"].get("run_id") or inherit)
     for name, path in (cfg.get("optional_tables") or {}).items():
         load_optional(engine, name, path)
 

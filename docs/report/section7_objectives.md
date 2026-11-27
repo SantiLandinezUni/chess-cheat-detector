@@ -41,3 +41,62 @@ Table 17 links each objective to the evidence that shows whether it was met.
 | 5. Real-time scoring | Score latency (p99) and messages per second in the load test | 13 |
 | 6. Serving and dashboard | Dashboard running from the serving database; restore check of the database dump | 16 |
 | 7. Legal assessment | Risks identified and the safeguards applied | 15 |
+
+## 7.4 Business case: Integrity-as-a-Service
+
+**The problem.** Fair play is now an operating cost for every online chess organiser. Chess.com closes more than 100,000 accounts a month for fair-play violations, about 0.3% of its monthly active users, and has a fair-play team of around 30 people (Svensen, 2025). Lichess builds its own detection (Irwin and Kaladin). A national federation, a club league or a company running an online event can afford neither, and falls back on webcams, manual review of a few suspicious games, or nothing.
+
+**The product.** Our pipeline can be offered as a business-to-business API that scores games for organisers without their own fair-play team.
+
+- *Input:* games in PGN with clock times (`%clk`), sent in a batch after an event or streamed move by move during it.
+- *Output per game and player:* the risk score (0–5), a tier (*not scored*, *normal*, *high risk* at the dashboard's threshold of 1.0), the confidence, and the contribution of each of the three timing terms, so a reviewer can see why a game was flagged.
+- *Output per player:* games scored, number of high-risk games, and the anomaly percentile within the rating band and time class (chapter 10) once the player has enough games.
+- *Live mode:* the running score after every move (chapter 13 and the dashboard's suspicion timeline), so an arbiter can watch a board while the round is being played.
+
+The API ranks games for human review and never closes an account by itself. This is a product choice and a legal one: GDPR Article 22 restricts decisions based solely on automated processing, so the organiser's arbiter decides (chapter 15). Players are identified only by hashed IDs on our side; the organiser keeps the link to real accounts.
+
+**Target customers.**
+
+| Segment | Examples | What they need |
+|---|---|---|
+| Tournament organisers and federations | National federations' online championships, club leagues, school competitions | Post-event screening of every game and a short review list for the arbiter |
+| E-sports and prize events | Platforms and streamers running cash-prize online events | Live risk during the event and fast screening before prizes are paid |
+| Proctoring and education | Online proctoring providers, chess academies with rated exams | A behavioural signal to combine with camera proctoring |
+
+**Cost from our own cluster runs.** The estimate uses the Slurm accounting of our real jobs, not a guess. The whole project used 1,510.5 core-hours in 91 jobs <!-- source: docs/validation_results/cluster_usage.csv (TOTAL) -->, including test and scaling runs that a product would not repeat. Table 18 keeps only the production steps and divides them by the games they processed.
+
+*Table 18. Compute per million games, by pipeline step (Slurm `sacct`)*
+
+| Step | Core-hours | Games processed | Core-hours per million games |
+|---|---|---|---|
+| Parsing (PGN → Parquet), three full months | 467.7 | 276.9 M | 1.69 |
+| Features (one month, 2026-10) | 35.0 | 95.4 M | 0.37 |
+| Baselines (one month, 2026-08) | 36.3 | 91.9 M | 0.39 |
+| Streaming scorer, full day 2026-10-22 | 32.7 | 3.06 M | 10.70 |
+| **Total** | | | **13.15** |
+
+<!-- source: docs/validation_results/cluster_usage.csv (parse (full month), features, baselines (per month, feedback 3.3), serving_v2 replay); games: docs/validation_results/data_at_scale_by_month.csv (time_class = all); 3,055,849 games: ~/exports/serving_v2/manifest.json -->
+
+Scoring dominates, because the streaming scorer keeps per-game state and handles every move as a message; the batch steps are cheap per game. At an on-demand cloud price of $0.0892 per hour for a 2-vCPU instance (AWS c7i.large, us-east-1; AWS, 2026), one core-hour costs about $0.045. Scoring one million games then costs about **$0.48** in compute, and the full pipeline about **$0.59**. Baselines are refreshed once a month, not per customer, so a customer who only sends its own events pays mainly for the scoring step. Storage of the serving tables is negligible at this volume. The real costs are engineering, support and liability, which we do not price here.
+
+**Value protected.** The value side only needs the order of magnitude:
+
+- *Prize money.* Chess.com's Titled Tuesday alone has a weekly prize fund of $10,000 (Chess.com, 2026), more than $500,000 a year. One undetected cheater taking a top prize in one event costs more than scoring hundreds of millions of games.
+- *Churn.* No platform publishes how many players leave because of cheating, so we state an assumption instead of a figure. An organiser with 10,000 paying members at €5 a month that loses an extra 1% of them in a year because of fair-play problems loses €6,000 of revenue. Scoring all of that organiser's games costs a few euros.
+- *Reviewer time.* The dashboard reduces 3 million games a day to a ranked list. Arbiters review the top tens or hundreds of games instead of sampling at random.
+
+**Pricing.** A simple price per 1,000 games scored (for example €1 per 1,000 games, with a monthly minimum for live events) would cover compute more than a thousand times. The price would be set by support and liability, not by the cluster.
+
+**Assumptions and limits.**
+
+- Compute cost uses on-demand cloud prices. A university cluster or reserved instances would be cheaper.
+- The score is a ranking heuristic, not a probability (chapter 12). The product is sold as *risk tiers for review*, not as "cheat detection".
+- Timing features need clock data; games without `%clk` cannot be scored.
+- Our baselines are built from Lichess play. A paying customer would need an evaluation on their own player population before relying on the tiers.
+- The churn and pricing figures are illustrative assumptions, not market research.
+
+*References to add to the bibliography:*
+Svensen, T. J. (2025, July 15). *100,000 Accounts Closed Per Month As Chess.com Eyes New Anti-Cheating Measures.* Chess.com. https://www.chess.com/news/view/100k-accounts-closed-anti-cheating-systems-improve
+Chess.com. (2026). *Titled Tuesday Now Bigger Than Ever With $10,000 In Prizes Every Week.* https://www.chess.com/news/view/titled-tuesday-new-10k-prize-fund
+Amazon Web Services. (2026). *Amazon EC2 On-Demand Pricing.* https://aws.amazon.com/ec2/pricing/on-demand/
+Regulation (EU) 2016/679 (General Data Protection Regulation), Article 22.

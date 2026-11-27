@@ -11,6 +11,10 @@ requests>=2.31
 confluent-kafka>=2.10,<3
 psycopg2-binary>=2.9
 matplotlib>=3.8
+# Serving database and dashboard (Part 2, E2)
+streamlit>=1.35,<2
+plotly>=5.20,<6
+sqlalchemy>=2.0,<3
 jupyter
 # Tests (run on the login node: PYTHONPATH=. pytest tests)
 pytest>=8

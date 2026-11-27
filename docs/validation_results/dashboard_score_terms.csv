@@ -1,4 +1,4 @@
-,mean_term_all,mean_term_high_risk
-z_move_time_cv,0.32,1.22
-z_share_moves_under_2s,0.39,2.54
-z_move_time_cv_low_clock,0.23,1.12
+term,mean_term_all,mean_term_high_risk
+z_move_time_cv,0.32,1.2
+z_share_moves_under_2s,0.39,2.6
+z_move_time_cv_low_clock,0.24,1.08

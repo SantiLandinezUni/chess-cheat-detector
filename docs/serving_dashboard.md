@@ -6,25 +6,33 @@ Owner: Mohamed. Runs on a laptop; reads only small result tables, never the full
 
 | File | Purpose |
 |---|---|
-| `sql/serving_schema.sql` | `serving` schema: `live_scores` and `running_scores` (partitioned by `run_id`), views `game_scores` and `player_scores_live`, `rating_bands` |
+| `sql/serving_schema.sql` | `serving` schema: `live_scores` and `running_scores` (partitioned by `run_id`), `settings`, views `game_scores` and `player_scores_live`, `rating_bands` (data dictionary §10) |
 | `src/serving/load_serving.py` | Loads the scorer export (L13), the running scores and the optional result tables into `serving` |
 | `src/serving/privacy_check.py` | Fails if any serving column could identify a player or a game |
 | `scripts/dump_serving.sh` | Privacy check → `pg_dump` of `serving` → restore into a scratch database → row-count comparison |
+| `src/serving/dashboard_numbers.py` | Writes the report's dashboard numbers (`docs/validation_results/dashboard_*.csv`) from the serving database |
 | `dashboard/app.py` | Streamlit dashboard, reads PostgreSQL only; every chart is aggregated in SQL |
 | `config/serving.yaml` | Database URL, input paths, high-risk threshold |
 
 ## Run
 
 ```bash
-pip install streamlit plotly sqlalchemy psycopg2-binary pyyaml pyarrow
+pip install -r requirements.txt
 # unzip serving_v2.zip into data/serving/serving_v2/ (data/ is git-ignored)
 python -m src.serving.load_serving --config config/serving.yaml
-streamlit run dashboard/app.py
-scripts/dump_serving.sh chess      # database deliverable
+streamlit run dashboard/app.py                       # or: -- --config <file>, or SERVING_CONFIG=<file>
+scripts/dump_serving.sh chess                        # database deliverable, written to deliverables/ (git-ignored)
 ```
 
-`SERVING_DB_URL` overrides the database URL in the config. `LICHESS_HASH_KEY` is only needed if an
-input file still carries the Lichess `game_id` (the serving_v2 export does not).
+`SERVING_DB_URL` overrides the database URL in the config. `LICHESS_HASH_KEY` (read with
+`src.common.ids.load_hash_key`) is only needed if an input file still carries the Lichess `game_id`
+(the serving_v2 export does not).
+
+The live scores file is required: if its path is wrong the load stops with an error instead of loading
+nothing. The timeline file (`score_timeline_sample_*.parquet`) has no `run_id` column, so its rows get the
+`run_id` of the live scores (e.g. `38028-day2026-10-22-nopacing-c4`) and the timeline page joins them.
+The high-risk threshold in `config/serving.yaml` is written to `serving.settings`, which the views read,
+so the views and the dashboard always use the same threshold.
 
 ## Loading a run: partition swap instead of DELETE (FEEDBACK_ACTIONS 3.4)
 
@@ -65,6 +73,9 @@ its partition.
 ## Tested on
 
 - `scores_60k_games.parquet` (v1, 60,000 October games): 119,886 rows, privacy check and restore check passed.
+- serving_v2 (full day 2026-10-22, run `38028-day2026-10-22-nopacing-c4`): 6,107,430 score rows for 3,055,849 games and 67,275
+  timeline rows for 1,000 games loaded in 2 min 15 s; all timeline games join their scores (final scores equal); privacy
+  check and restore check passed; dashboard first load about 18 s. Numbers: `python -m src.serving.dashboard_numbers`.
 - Scale test before serving_v2 arrived: the v1 file replicated 50× with new hashed keys (5,994,300 player-games,
   3,000,000 games) plus 70,403 running-score rows for 997 games. Load 2 min 40 s on a laptop-sized container,
   rerun replaced the partition with the same counts; dashboard first load about 22 s, then cached.

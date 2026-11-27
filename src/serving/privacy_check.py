@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from pathlib import Path
@@ -16,6 +17,7 @@ from pathlib import Path
 import yaml
 from sqlalchemy import create_engine, text
 
+LOG = logging.getLogger("privacy_check")
 FORBIDDEN = ("username", "game_id", "white", "black", "site", "email", "name")
 
 
@@ -23,6 +25,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="config/serving.yaml")
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = yaml.safe_load(Path(args.config).read_text())
     engine = create_engine(os.environ.get("SERVING_DB_URL", cfg["postgres"]["url"]))
 
@@ -41,12 +44,13 @@ def main() -> None:
                     f"WHERE {key} IS NOT NULL AND {key} !~ '^[0-9a-f]{{16}}$'")).scalar()
                 if bad:
                     failures.append(f"serving.{table}: {bad} {key} values are not 16-hex hashes")
-        print(f"Checked {len({t for t, _ in cols})} serving tables/views, {len(cols)} columns.")
+        LOG.info("Checked %d serving tables/views, %d columns", len({t for t, _ in cols}), len(cols))
 
     if failures:
-        print("PRIVACY CHECK FAILED:\n  " + "\n  ".join(failures))
+        for failure in failures:
+            LOG.error("PRIVACY CHECK FAILED: %s", failure)
         sys.exit(1)
-    print("Privacy check passed: no usernames or game_ids, all player_id and game_key values are hashes.")
+    LOG.info("Privacy check passed: no usernames or game_ids, all player_id and game_key values are hashes")
 
 
 if __name__ == "__main__":

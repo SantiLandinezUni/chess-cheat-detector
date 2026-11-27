@@ -227,3 +227,6 @@ data_sample/
 logs/
 *.pgn
 *.zst
+
+# Database dumps from scripts/dump_serving.sh (never commit)
+deliverables/
