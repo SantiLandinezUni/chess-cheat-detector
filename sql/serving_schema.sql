@@ -58,41 +58,60 @@ CREATE INDEX IF NOT EXISTS live_scores_risk_idx ON serving.live_scores (run_id, 
 CREATE INDEX IF NOT EXISTS live_scores_class_band_idx ON serving.live_scores (run_id, time_class, band_id);
 CREATE INDEX IF NOT EXISTS live_scores_player_idx ON serving.live_scores (run_id, player_id);
 
--- Move-by-move running score of a sample of games (scorer output, one row per scored ply).
--- Feeds the "Suspicion timeline" page of the dashboard. color/player_id are optional in the input.
+-- Move-by-move running score of a sample of games (scorer output, one row per scored ply and colour).
+-- Feeds the "Suspicion timeline" page of the dashboard. player_id is optional in the input.
+-- An older running_scores without the primary key (PR #34) is dropped and reloaded from the file.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname = 'serving' AND c.relname = 'running_scores' AND c.relkind = 'p')
+       AND NOT EXISTS (SELECT 1 FROM pg_constraint
+                       WHERE conrelid = to_regclass('serving.running_scores') AND contype = 'p') THEN
+        RAISE NOTICE 'serving.running_scores has no primary key (PR #34 version): dropping it, reload the timeline file';
+        DROP TABLE serving.running_scores CASCADE;
+    END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS serving.running_scores (
     run_id      VARCHAR(64) NOT NULL,
     game_key    CHAR(16)    NOT NULL CHECK (game_key ~ '^[0-9a-f]{16}$'),
     ply         SMALLINT    NOT NULL CHECK (ply >= 1),
-    color       CHAR(1)     CHECK (color IN ('w', 'b')),
+    color       CHAR(1)     NOT NULL CHECK (color IN ('w', 'b')),
     player_id   CHAR(16)    CHECK (player_id ~ '^[0-9a-f]{16}$'),
-    score       REAL        CHECK (score >= 0 AND score <= 5)
+    score       REAL        CHECK (score >= 0 AND score <= 5),
+    PRIMARY KEY (run_id, game_key, ply, color)
 ) PARTITION BY LIST (run_id);
 
-CREATE INDEX IF NOT EXISTS running_scores_game_idx ON serving.running_scores (run_id, game_key, ply);
+-- Dashboard settings. One row; src/serving/load_serving.py writes it from config/serving.yaml
+-- (dashboard.high_risk_threshold), so the views and the dashboard use the same threshold.
+CREATE TABLE IF NOT EXISTS serving.settings (
+    id                   BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
+    high_risk_threshold  REAL    NOT NULL CHECK (high_risk_threshold > 0 AND high_risk_threshold <= 5)
+);
+INSERT INTO serving.settings (high_risk_threshold) VALUES (1.0) ON CONFLICT (id) DO NOTHING;
 
 -- One row per game: the higher of the two players' scores.
 CREATE OR REPLACE VIEW serving.game_scores AS
-SELECT run_id,
-       game_key,
-       MIN(time_class)                         AS time_class,
-       MAX(risk_score)                         AS max_risk_score,
-       COUNT(*)                                AS n_players_scored,
-       SUM(CASE WHEN risk_score >= 1 THEN 1 ELSE 0 END) AS n_players_high
-FROM serving.live_scores
-GROUP BY run_id, game_key;
+SELECT s.run_id,
+       s.game_key,
+       MIN(s.time_class)                                    AS time_class,
+       MAX(s.risk_score)                                    AS max_risk_score,
+       COUNT(*)                                             AS n_players_scored,
+       COUNT(*) FILTER (WHERE s.risk_score >= t.high_risk_threshold) AS n_players_high
+FROM serving.live_scores s CROSS JOIN serving.settings t
+GROUP BY s.run_id, s.game_key;
 
 -- One row per player across the games in a run.
 CREATE OR REPLACE VIEW serving.player_scores_live AS
-SELECT run_id,
-       player_id,
-       COUNT(*)                                 AS n_games,
-       COUNT(risk_score)                        AS n_games_scored,
-       AVG(risk_score)                          AS mean_risk_score,
-       MAX(risk_score)                          AS max_risk_score,
-       SUM(CASE WHEN risk_score >= 1 THEN 1 ELSE 0 END) AS n_games_high
-FROM serving.live_scores
-GROUP BY run_id, player_id;
+SELECT s.run_id,
+       s.player_id,
+       COUNT(*)                                             AS n_games,
+       COUNT(s.risk_score)                                  AS n_games_scored,
+       AVG(s.risk_score)                                    AS mean_risk_score,
+       MAX(s.risk_score)                                    AS max_risk_score,
+       COUNT(*) FILTER (WHERE s.risk_score >= t.high_risk_threshold) AS n_games_high
+FROM serving.live_scores s CROSS JOIN serving.settings t
+GROUP BY s.run_id, s.player_id;
 
 -- Rating bands, copied from ref.rating_bands so the dashboard can show labels.
 CREATE TABLE IF NOT EXISTS serving.rating_bands (
