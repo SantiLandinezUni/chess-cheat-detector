@@ -558,3 +558,60 @@ The score is a heuristic ranking for "high risk" games, not a probability and no
 | Months | those of the `cluster/features.sbatch` run (job 36567: 2026-10) | those of the run (2026-10, 13 Nov 2026) |
 
 The scorer's own population matches both: the replay producer sends no BOT games, no 0-move games and (by default) no correspondence; a correspondence game from another producer finds no baseline cell and gets a null `risk_score`. On the tables of 23 Nov (L10) and 13 Nov (L12), both for 2026-10: the same 170 usable cells (band × time class × feature, `n ≥ 30`) with identical `n`; `p50` differs by at most 0.0022 and the robust scale by at most 0.47% (approximate percentiles over float vs double values). Score comparison on the same 60,000 games (run `29064-nopacing-c1` on L12 vs `37995-nopacing-c1` on L10, `docs/validation_results/scorer_baselines_comparison.csv`): Pearson r = 0.999999 over 115,620 scored player-games, mean |Δ risk_score| 0.00006 (max 0.0037), no change of risk tier (unscored / < 1.0 / ≥ 1.0, the dashboard's `high_risk_threshold`), top-1% overlap 100% per player-game and per game.
+
+---
+
+## 10. PostgreSQL — schema `serving` (Part 2, workstream E2)
+
+Small result tables for the dashboard, loaded by `src/serving/load_serving.py` from the scorer export (`config/serving.yaml`), DDL in `sql/serving_schema.sql`. Games are identified only by `game_key` = HMAC-SHA256(`LICHESS_HASH_KEY`, `game_id`), first 16 hex characters, computed on the cluster before export; a Lichess `game_id` never reaches this schema (it is public and reveals both usernames). `src/serving/privacy_check.py` checks every column name and the format of every `player_id` and `game_key` before a dump (`scripts/dump_serving.sh`).
+
+`live_scores` and `running_scores` are partitioned `BY LIST (run_id)`, one partition per scorer run. A run is replaced by loading a staging table and swapping partitions (detach + drop old, attach new) in one transaction, never by `DELETE` (FEEDBACK_ACTIONS 3.4).
+
+### `serving.live_scores`
+
+Final per-game, per-player scores: L13 with `game_id` replaced by `game_key`. PK (`run_id`, `game_key`, `player_id`). All other columns, types and rules as in L13, as SQL types (`VARCHAR`, `SMALLINT`, `INTEGER`, `REAL`, `TIMESTAMPTZ`), plus these constraints:
+
+| Column | Type | Constraint |
+|---|---|---|
+| `run_id` | VARCHAR(64) | NN, PK part, partition key |
+| `game_key` | CHAR(16) | NN, PK part, `~ '^[0-9a-f]{16}$'` |
+| `player_id` | CHAR(16) | NN, PK part, `~ '^[0-9a-f]{16}$'` |
+| `color` | CHAR(1) | NN, `w` or `b` |
+| `n_moves`, `n_timed_moves` | INTEGER | NN, ≥ 0 |
+| `n_score_features` | SMALLINT | NN, 0–3 |
+| `confidence` | REAL | NN, 0 ≤ value < 1 |
+| `risk_score` | REAL | 0–5; null exactly when `n_score_features = 0` (table CHECK) |
+
+Indexes: (`run_id`, `risk_score DESC NULLS LAST`) for the top-N list, (`run_id`, `time_class`, `band_id`), (`run_id`, `player_id`).
+
+### `serving.running_scores`
+
+Move-by-move running score of a sample of games (`score_timeline_sample_<day>.parquet`: 1,000 games sampled uniformly from the day, one row per score message), for the dashboard's suspicion timeline. Only `game_key`, `ply`, `color` and `risk_score` are loaded; the other export columns (`seq`, running features, `is_final`, …) stay in the file. The export has no `run_id`: rows get the `run_id` of the live scores loaded in the same run.
+
+| Column | Type | Constraint | Description |
+|---|---|---|---|
+| `run_id` | VARCHAR(64) | NN, PK part, partition key | inherited from `serving.live_scores` |
+| `game_key` | CHAR(16) | NN, PK part, `~ '^[0-9a-f]{16}$'` | |
+| `ply` | SMALLINT | NN, PK part, ≥ 1 | half-move after which the score was computed |
+| `color` | CHAR(1) | NN, PK part, `w` or `b` | the scored player |
+| `player_id` | CHAR(16) | `~ '^[0-9a-f]{16}$'` | optional in the export |
+| `score` | REAL | 0–5, null until a feature is scored | running `risk_score` (§9 rule); column `risk_score` in the export |
+
+### `serving.settings`
+
+One row (`id = true`). `high_risk_threshold` REAL NN (0 < value ≤ 5), written by the loader from `dashboard.high_risk_threshold` in `config/serving.yaml` (default 1.0). Read by the views below, so views and dashboard use the same threshold.
+
+### `serving.rating_bands`
+
+Copy of `ref.rating_bands` (§5), same columns and bands, so the serving schema can be dumped and restored on its own.
+
+### Views
+
+| View | Grain | Columns |
+|---|---|---|
+| `serving.game_scores` | `run_id`, `game_key` | `time_class`, `max_risk_score` (higher of the two players), `n_players_scored`, `n_players_high` (players with `risk_score ≥ high_risk_threshold`) |
+| `serving.player_scores_live` | `run_id`, `player_id` | `n_games`, `n_games_scored`, `mean_risk_score`, `max_risk_score`, `n_games_high` |
+
+### Optional result tables
+
+`serving.baselines`, `serving.player_anomaly`, `serving.labels_summary`, `serving.model_results`: copied as-is from the files listed under `optional_tables` in `config/serving.yaml`, with the column names of their source tables (L10, L11, workstreams C and D). The loader refuses any file with a `username`, `game_id`, `white`, `black` or `site` column.
