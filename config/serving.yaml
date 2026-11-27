@@ -7,20 +7,20 @@ postgres:
   url: postgresql+psycopg2://localhost:5432/chess
 
 live_scores:
-  # A parquet file or a folder of parquet files (lake/scores/live_game/run_id=<id>/).
+  # Required: the load stops with an error if this file is missing.
   # serving_v2: the full day of 2026-10-22 scored with the final baselines (lake/baselines).
-  # run_id is taken from the file if it has one; this value is the fallback.
-  path: data/serving/serving_v2/live_scores
+  # run_id comes from the file (e.g. 38028-day2026-10-22-nopacing-c4); this value is only a fallback.
+  path: data/serving/serving_v2/scores_live_game_2026-10-22.parquet
   run_id: oct22-full-day
 
-# Move-by-move running scores of about 1,000 games (game_key, ply, score). Optional.
+# Move-by-move running scores of about 1,000 games (game_key, ply, color, score). Optional.
+# The file has no run_id: its rows get the run_id of the live scores above.
 running_scores:
-  path: data/serving/serving_v2/running_scores
-  run_id: oct22-full-day
+  path: data/serving/serving_v2/score_timeline_sample_2026-10-22.parquet
 
 # Optional tables: loaded as-is (same columns as the data dictionary) into serving.<table>.
 optional_tables:
-  baselines: data/serving/baselines.parquet          # L10 (or L12 baselines_provisional)
+  baselines: data/serving/serving_v2/baselines.parquet  # L10, final baselines (lake/baselines)
   player_anomaly: data/serving/anomaly_player.parquet # L11
   labels_summary: data/serving/labels_summary.csv     # workstream C
   model_results: data/serving/model_results.csv       # workstream D
